@@ -62,38 +62,40 @@ export class MarketDataService implements OnModuleInit {
         buffer.shift();
       }
 
-      // Persistir vela en PostgreSQL
-      try {
-        await this.prisma.candle.upsert({
-          where: {
-            symbol_interval_openTime: {
+      // Persistir vela en PostgreSQL si está disponible
+      if (this.prisma.isConnected) {
+        try {
+          await this.prisma.candle.upsert({
+            where: {
+              symbol_interval_openTime: {
+                symbol,
+                interval: candle.interval,
+                openTime: BigInt(candle.openTime)
+              }
+            },
+            create: {
               symbol,
               interval: candle.interval,
-              openTime: BigInt(candle.openTime)
+              openTime: BigInt(candle.openTime),
+              closeTime: BigInt(candle.closeTime),
+              open: new Prisma.Decimal(candle.open),
+              high: new Prisma.Decimal(candle.high),
+              low: new Prisma.Decimal(candle.low),
+              close: new Prisma.Decimal(candle.close),
+              volume: new Prisma.Decimal(candle.volume),
+              isClosed: true
+            },
+            update: {
+              close: new Prisma.Decimal(candle.close),
+              high: new Prisma.Decimal(candle.high),
+              low: new Prisma.Decimal(candle.low),
+              volume: new Prisma.Decimal(candle.volume),
+              isClosed: true
             }
-          },
-          create: {
-            symbol,
-            interval: candle.interval,
-            openTime: BigInt(candle.openTime),
-            closeTime: BigInt(candle.closeTime),
-            open: new Prisma.Decimal(candle.open),
-            high: new Prisma.Decimal(candle.high),
-            low: new Prisma.Decimal(candle.low),
-            close: new Prisma.Decimal(candle.close),
-            volume: new Prisma.Decimal(candle.volume),
-            isClosed: true
-          },
-          update: {
-            close: new Prisma.Decimal(candle.close),
-            high: new Prisma.Decimal(candle.high),
-            low: new Prisma.Decimal(candle.low),
-            volume: new Prisma.Decimal(candle.volume),
-            isClosed: true
-          }
-        });
-      } catch (err) {
-        // Modo resiliente si DB no conectada
+          });
+        } catch (err) {
+          // Modo resiliente si DB no conectada
+        }
       }
 
       // Evaluar detector de meseta
@@ -116,69 +118,75 @@ export class MarketDataService implements OnModuleInit {
     this.logger.log(`Iniciando backfill de ${days} días para ${symbol}...`);
 
     try {
-      await this.prisma.watchlistItem.updateMany({
-        where: { symbol },
-        data: { syncStatus: SyncStatus.SYNCING }
-      });
+      if (this.prisma.isConnected) {
+        await this.prisma.watchlistItem.updateMany({
+          where: { symbol },
+          data: { syncStatus: SyncStatus.SYNCING }
+        });
+      }
 
       const candles = await this.binanceService.fetchHistoricalKlines(symbol, startTime);
 
       if (candles.length > 0) {
         this.candleBuffers.set(symbol, candles);
 
-        // Guardar lote en DB (usando chunks para eficiencia)
-        const chunkSize = 500;
-        for (let i = 0; i < candles.length; i += chunkSize) {
-          const chunk = candles.slice(i, i + chunkSize);
-          try {
-            await this.prisma.candle.createMany({
-              data: chunk.map(c => ({
-                symbol,
-                interval: c.interval,
-                openTime: BigInt(c.openTime),
-                closeTime: BigInt(c.closeTime),
-                open: new Prisma.Decimal(c.open),
-                high: new Prisma.Decimal(c.high),
-                low: new Prisma.Decimal(c.low),
-                close: new Prisma.Decimal(c.close),
-                volume: new Prisma.Decimal(c.volume),
-                isClosed: true
-              })),
-              skipDuplicates: true
-            });
-          } catch (err) {
-            // Ignorar duplicados
+        // Guardar lote en DB si está conectada
+        if (this.prisma.isConnected) {
+          const chunkSize = 500;
+          for (let i = 0; i < candles.length; i += chunkSize) {
+            const chunk = candles.slice(i, i + chunkSize);
+            try {
+              await this.prisma.candle.createMany({
+                data: chunk.map(c => ({
+                  symbol,
+                  interval: c.interval,
+                  openTime: BigInt(c.openTime),
+                  closeTime: BigInt(c.closeTime),
+                  open: new Prisma.Decimal(c.open),
+                  high: new Prisma.Decimal(c.high),
+                  low: new Prisma.Decimal(c.low),
+                  close: new Prisma.Decimal(c.close),
+                  volume: new Prisma.Decimal(c.volume),
+                  isClosed: true
+                })),
+                skipDuplicates: true
+              });
+            } catch (err) {}
           }
+
+          const firstCandle = candles[0];
+          const lastCandle = candles[candles.length - 1];
+
+          await this.prisma.watchlistItem.updateMany({
+            where: { symbol },
+            data: {
+              syncStatus: SyncStatus.SYNCED,
+              coverageFrom: new Date(firstCandle.openTime),
+              coverageTo: new Date(lastCandle.closeTime),
+              lastCandleAt: new Date(lastCandle.openTime)
+            }
+          });
         }
-
-        const firstCandle = candles[0];
-        const lastCandle = candles[candles.length - 1];
-
-        await this.prisma.watchlistItem.updateMany({
-          where: { symbol },
-          data: {
-            syncStatus: SyncStatus.SYNCED,
-            coverageFrom: new Date(firstCandle.openTime),
-            coverageTo: new Date(lastCandle.closeTime),
-            lastCandleAt: new Date(lastCandle.openTime)
-          }
-        });
 
         // Evaluación inicial retrospectiva
         await this.detectorService.evaluateCoin(symbol, candles, true);
         this.logger.log(`Backfill para ${symbol} finalizado con éxito (${candles.length} velas procesadas).`);
       } else {
+        if (this.prisma.isConnected) {
+          await this.prisma.watchlistItem.updateMany({
+            where: { symbol },
+            data: { syncStatus: SyncStatus.FAILED }
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.error(`Error durante backfill de ${symbol}: ${err?.message || err}`);
+      if (this.prisma.isConnected) {
         await this.prisma.watchlistItem.updateMany({
           where: { symbol },
           data: { syncStatus: SyncStatus.FAILED }
         });
       }
-    } catch (err) {
-      this.logger.error(`Error durante backfill de ${symbol}: ${err?.message || err}`);
-      await this.prisma.watchlistItem.updateMany({
-        where: { symbol },
-        data: { syncStatus: SyncStatus.FAILED }
-      });
     }
 
     // Suscribir al WebSocket en vivo

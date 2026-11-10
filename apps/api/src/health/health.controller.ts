@@ -19,25 +19,19 @@ export class HealthController {
   @ApiOperation({ summary: 'Estado de salud del sistema, conectividad REST/WS y contadores' })
   async getHealth() {
     const wsStatus = this.binanceService.getWsStatus();
-    let dbStatus = 'connected';
-    let activeCount = 0;
+    const dbStatus = this.prisma.isConnected ? 'connected' : 'in-memory (PostgreSQL offline)';
 
-    try {
-      activeCount = await this.prisma.watchlistItem.count({ where: { status: 'ACTIVE' } });
-    } catch {
-      dbStatus = 'disconnected';
-    }
-
+    const watchlist = await this.watchlistService.getWatchlist('ACTIVE');
     const { count: dailyAdded, max: maxDaily } = await this.watchlistService.getDailyAdditionsCount();
 
     return {
-      status: wsStatus === 'connected' && dbStatus === 'connected' ? 'ok' : 'degraded',
+      status: wsStatus === 'connected' ? 'ok' : 'degraded',
       timestamp: Date.now(),
       uptimeSeconds: Math.floor((Date.now() - this.startTime) / 1000),
       database: dbStatus,
       binanceRest: 'connected',
       binanceWs: wsStatus,
-      activeSymbolsCount: activeCount,
+      activeSymbolsCount: watchlist.length,
       dailyAddedCount: dailyAdded,
       maxDailySymbols: maxDaily
     };

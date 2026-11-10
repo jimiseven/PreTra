@@ -17,6 +17,10 @@ export class DetectorService {
   private currentConfig: DetectionConfig = { ...DEFAULT_DETECTION_CONFIG };
   private activeStatesCache = new Map<string, { state: CoinState; metrics: MetricsSnapshot }>();
 
+  // Almacén en memoria para eventos y episodios
+  private memoryEvents = new Map<string, any[]>();
+  private memoryEpisodes: any[] = [];
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly sseService: SseService
@@ -60,89 +64,86 @@ export class DetectorService {
       metrics: result.metrics
     });
 
-    // Solo persistimos en base de datos si la base de datos está disponible
-    try {
-      // 1. Upsert en MarketState
-      await this.prisma.marketState.upsert({
-        where: { symbol },
-        create: {
-          symbol,
-          currentState: result.state,
-          lastEvaluatedAt: new Date(result.metrics.peakAt || Date.now()),
-          peakPrice: new Prisma.Decimal(result.metrics.peakPrice),
-          peakAt: new Date(result.metrics.peakAt || Date.now()),
-          impulseStartAt: result.metrics.impulseStartAt ? new Date(result.metrics.impulseStartAt) : null,
-          currentPlateauStartAt: result.metrics.plateauDurationHours ? new Date() : null,
-          metrics: result.metrics as any,
-          algorithmVersion: this.currentConfig.version
-        },
-        update: {
-          currentState: result.state,
-          lastEvaluatedAt: new Date(),
-          peakPrice: new Prisma.Decimal(result.metrics.peakPrice),
-          peakAt: new Date(result.metrics.peakAt || Date.now()),
-          impulseStartAt: result.metrics.impulseStartAt ? new Date(result.metrics.impulseStartAt) : null,
-          metrics: result.metrics as any,
-          algorithmVersion: this.currentConfig.version
-        }
-      });
+    // Guardar en almacén en memoria
+    if (result.event && (!isBackfill || result.state === CoinState.MESETA_TEMPRANA)) {
+      const eventRecord = {
+        id: `ev-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        symbol,
+        ...result.event,
+        detectedAt: result.event.detectedAt.toISOString(),
+        effectiveAt: result.event.effectiveAt.toISOString()
+      };
+      const symbolEvents = this.memoryEvents.get(symbol) || [];
+      symbolEvents.unshift(eventRecord);
+      this.memoryEvents.set(symbol, symbolEvents.slice(0, 50));
 
-      // 2. Si hubo evento de cambio de estado o meseta
-      if (result.event && (!isBackfill || result.state === CoinState.MESETA_TEMPRANA)) {
-        await this.prisma.detectionEvent.create({
-          data: {
+      if (result.plateauAction && result.plateauAction.action !== 'NONE') {
+        if (result.plateauAction.action === 'START') {
+          this.memoryEpisodes.unshift({
+            id: `ep-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
             symbol,
-            eventType: result.event.eventType,
-            stateFrom: result.event.stateFrom,
-            stateTo: result.event.stateTo,
-            detectedAt: result.event.detectedAt,
-            effectiveAt: result.event.effectiveAt,
-            isRetrospective: result.event.isRetrospective,
-            metricsSnapshot: result.event.metricsSnapshot as any,
-            configVersion: result.event.configVersion,
-            explanation: result.event.explanation,
-            dedupeKey: result.event.dedupeKey
+            startedAt: new Date(result.metrics.peakAt).toISOString(),
+            detectedAt: new Date().toISOString(),
+            peakPrice: result.metrics.peakPrice,
+            rangeHigh: result.plateauAction.rangeHigh,
+            rangeLow: result.plateauAction.rangeLow,
+            riseBeforePct: result.metrics.impulseTotalPct || 0,
+            drawdownAtDetectionPct: Math.abs(result.metrics.distanceToPeakPct),
+            status: result.plateauAction.status,
+            metricsSnapshot: result.metrics,
+            algorithmVersion: this.currentConfig.version
+          });
+        }
+      }
+    }
+
+    // Persistir en PostgreSQL si está disponible
+    if (this.prisma.isConnected) {
+      try {
+        await this.prisma.marketState.upsert({
+          where: { symbol },
+          create: {
+            symbol,
+            currentState: result.state,
+            lastEvaluatedAt: new Date(result.metrics.peakAt || Date.now()),
+            peakPrice: new Prisma.Decimal(result.metrics.peakPrice),
+            peakAt: new Date(result.metrics.peakAt || Date.now()),
+            impulseStartAt: result.metrics.impulseStartAt ? new Date(result.metrics.impulseStartAt) : null,
+            currentPlateauStartAt: result.metrics.plateauDurationHours ? new Date() : null,
+            metrics: result.metrics as any,
+            algorithmVersion: this.currentConfig.version
+          },
+          update: {
+            currentState: result.state,
+            lastEvaluatedAt: new Date(),
+            peakPrice: new Prisma.Decimal(result.metrics.peakPrice),
+            peakAt: new Date(result.metrics.peakAt || Date.now()),
+            impulseStartAt: result.metrics.impulseStartAt ? new Date(result.metrics.impulseStartAt) : null,
+            metrics: result.metrics as any,
+            algorithmVersion: this.currentConfig.version
           }
         });
 
-        // 3. Si hubo acción de meseta (START / BREAKDOWN / INVALIDATE)
-        if (result.plateauAction && result.plateauAction.action !== 'NONE') {
-          if (result.plateauAction.action === 'START') {
-            await this.prisma.plateauEpisode.create({
-              data: {
-                symbol,
-                startedAt: new Date(result.metrics.peakAt),
-                detectedAt: new Date(),
-                peakPrice: new Prisma.Decimal(result.metrics.peakPrice),
-                rangeHigh: new Prisma.Decimal(result.plateauAction.rangeHigh),
-                rangeLow: new Prisma.Decimal(result.plateauAction.rangeLow),
-                riseBeforePct: new Prisma.Decimal(result.metrics.impulseTotalPct || 0),
-                drawdownAtDetectionPct: new Prisma.Decimal(Math.abs(result.metrics.distanceToPeakPct)),
-                status: result.plateauAction.status,
-                metricsSnapshot: result.metrics as any,
-                algorithmVersion: this.currentConfig.version
-              }
-            });
-          } else if (result.plateauAction.action === 'BREAKDOWN' || result.plateauAction.action === 'INVALIDATE') {
-            // Actualizamos último episodio en progreso
-            const latestEpisode = await this.prisma.plateauEpisode.findFirst({
-              where: { symbol, status: 'IN_PROGRESS' },
-              orderBy: { detectedAt: 'desc' }
-            });
-            if (latestEpisode) {
-              await this.prisma.plateauEpisode.update({
-                where: { id: latestEpisode.id },
-                data: {
-                  endedAt: new Date(),
-                  status: result.plateauAction.status
-                }
-              });
+        if (result.event && (!isBackfill || result.state === CoinState.MESETA_TEMPRANA)) {
+          await this.prisma.detectionEvent.create({
+            data: {
+              symbol,
+              eventType: result.event.eventType,
+              stateFrom: result.event.stateFrom,
+              stateTo: result.event.stateTo,
+              detectedAt: result.event.detectedAt,
+              effectiveAt: result.event.effectiveAt,
+              isRetrospective: result.event.isRetrospective,
+              metricsSnapshot: result.event.metricsSnapshot as any,
+              configVersion: result.event.configVersion,
+              explanation: result.event.explanation,
+              dedupeKey: result.event.dedupeKey
             }
-          }
+          });
         }
+      } catch (dbErr) {
+        // Ignorar si falla la persistencia en DB
       }
-    } catch (dbErr) {
-      // Ignorar si la base de datos aún no está migrada o en modo offline
     }
 
     // Difusión en tiempo real hacia el Frontend
@@ -174,5 +175,13 @@ export class DetectorService {
 
   getCachedState(symbol: string) {
     return this.activeStatesCache.get(symbol);
+  }
+
+  getMemoryEvents(symbol: string) {
+    return this.memoryEvents.get(symbol) || [];
+  }
+
+  getMemoryEpisodes() {
+    return this.memoryEpisodes;
   }
 }

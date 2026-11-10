@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
-import WebSocket from 'ws';
+import * as wsLib from 'ws';
+import type WebSocket from 'ws';
 import { Candle } from '@pretra/shared';
 
 export interface BinanceSymbolInfo {
@@ -156,7 +157,7 @@ export class BinancePublicService implements OnModuleInit, OnModuleDestroy {
   subscribeSymbol(symbol: string) {
     const formatted = symbol.toLowerCase();
     this.subscribedSymbols.add(formatted);
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === 1) { // 1 = OPEN
       const msg = {
         method: 'SUBSCRIBE',
         params: [`${formatted}@kline_1m`],
@@ -173,7 +174,7 @@ export class BinancePublicService implements OnModuleInit, OnModuleDestroy {
   unsubscribeSymbol(symbol: string) {
     const formatted = symbol.toLowerCase();
     this.subscribedSymbols.delete(formatted);
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === 1) { // 1 = OPEN
       const msg = {
         method: 'UNSUBSCRIBE',
         params: [`${formatted}@kline_1m`],
@@ -192,7 +193,8 @@ export class BinancePublicService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Conectando a Binance WebSocket: ${wsUrl}`);
 
     try {
-      this.ws = new WebSocket(wsUrl);
+      const WSConstructor = (wsLib as any).WebSocket || (wsLib as any).default || wsLib;
+      this.ws = new WSConstructor(wsUrl);
 
       this.ws.on('open', () => {
         this.isConnecting = false;
@@ -213,7 +215,7 @@ export class BinancePublicService implements OnModuleInit, OnModuleDestroy {
         // Heartbeat / ping cada 3 minutos
         if (this.pingInterval) clearInterval(this.pingInterval);
         this.pingInterval = setInterval(() => {
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          if (this.ws && this.ws.readyState === 1) {
             this.ws.ping();
             this.lastPingTime = Date.now();
           }
@@ -283,8 +285,8 @@ export class BinancePublicService implements OnModuleInit, OnModuleDestroy {
 
   getWsStatus(): 'connected' | 'reconnecting' | 'disconnected' {
     if (!this.ws) return 'disconnected';
-    if (this.ws.readyState === WebSocket.OPEN) return 'connected';
-    if (this.ws.readyState === WebSocket.CONNECTING) return 'reconnecting';
+    if (this.ws.readyState === 1) return 'connected'; // 1 = OPEN
+    if (this.ws.readyState === 0) return 'reconnecting'; // 0 = CONNECTING
     return 'disconnected';
   }
 }

@@ -19,33 +19,35 @@ export class CoinsController {
     const cleanSymbol = symbol.toUpperCase();
     const cached = this.detectorService.getCachedState(cleanSymbol);
 
-    try {
-      const stateFromDb = await this.prisma.marketState.findUnique({
-        where: { symbol: cleanSymbol },
-        include: { watchlistItem: true }
-      });
+    if (this.prisma.isConnected) {
+      try {
+        const stateFromDb = await this.prisma.marketState.findUnique({
+          where: { symbol: cleanSymbol },
+          include: { watchlistItem: true }
+        });
 
-      if (!stateFromDb && !cached) {
-        throw new NotFoundException(`No hay datos registrados para ${cleanSymbol}.`);
-      }
+        if (stateFromDb) {
+          return {
+            symbol: cleanSymbol,
+            state: cached?.state || stateFromDb?.currentState || 'OBSERVACION',
+            metrics: cached?.metrics || stateFromDb?.metrics,
+            lastEvaluatedAt: stateFromDb?.lastEvaluatedAt,
+            watchlistItem: stateFromDb?.watchlistItem
+          };
+        }
+      } catch {}
+    }
 
+    if (cached) {
       return {
         symbol: cleanSymbol,
-        state: cached?.state || stateFromDb?.currentState || 'OBSERVACION',
-        metrics: cached?.metrics || stateFromDb?.metrics,
-        lastEvaluatedAt: stateFromDb?.lastEvaluatedAt,
-        watchlistItem: stateFromDb?.watchlistItem
+        state: cached.state,
+        metrics: cached.metrics,
+        lastEvaluatedAt: new Date()
       };
-    } catch {
-      if (cached) {
-        return {
-          symbol: cleanSymbol,
-          state: cached.state,
-          metrics: cached.metrics
-        };
-      }
-      throw new NotFoundException(`No hay datos registrados para ${cleanSymbol}.`);
     }
+
+    throw new NotFoundException(`No hay datos registrados para ${cleanSymbol}.`);
   }
 
   @Get(':symbol/candles')
@@ -60,11 +62,11 @@ export class CoinsController {
     const cleanSymbol = symbol.toUpperCase();
     const limit = Math.min(2000, parseInt(limitStr, 10) || 1000);
 
-    // Intentamos obtener del buffer de memoria primero
+    // Intentamos obtener del buffer de memoria primero (contiene las velas reales de Binance)
     const bufferCandles = this.marketDataService.getCandles(cleanSymbol);
     if (bufferCandles.length > 0) {
       return bufferCandles.slice(-limit).map(c => ({
-        time: Math.floor(c.openTime / 1000), // Formato UNIX seconds para Lightweight Charts
+        time: Math.floor(c.openTime / 1000),
         open: c.open,
         high: c.high,
         low: c.low,
@@ -73,39 +75,44 @@ export class CoinsController {
       }));
     }
 
-    try {
-      const dbCandles = await this.prisma.candle.findMany({
-        where: { symbol: cleanSymbol, interval },
-        orderBy: { openTime: 'asc' },
-        take: limit
-      });
+    if (this.prisma.isConnected) {
+      try {
+        const dbCandles = await this.prisma.candle.findMany({
+          where: { symbol: cleanSymbol, interval },
+          orderBy: { openTime: 'asc' },
+          take: limit
+        });
 
-      return dbCandles.map(c => ({
-        time: Math.floor(Number(c.openTime) / 1000),
-        open: Number(c.open),
-        high: Number(c.high),
-        low: Number(c.low),
-        close: Number(c.close),
-        volume: Number(c.volume)
-      }));
-    } catch {
-      return [];
+        return dbCandles.map(c => ({
+          time: Math.floor(Number(c.openTime) / 1000),
+          open: Number(c.open),
+          high: Number(c.high),
+          low: Number(c.low),
+          close: Number(c.close),
+          volume: Number(c.volume)
+        }));
+      } catch {}
     }
+
+    return [];
   }
 
   @Get(':symbol/events')
   @ApiOperation({ summary: 'Obtiene la cronología de eventos y cambios de estado para la moneda' })
   async getEvents(@Param('symbol') symbol: string) {
     const cleanSymbol = symbol.toUpperCase();
-    try {
-      const events = await this.prisma.detectionEvent.findMany({
-        where: { symbol: cleanSymbol },
-        orderBy: { detectedAt: 'desc' },
-        take: 50
-      });
-      return events;
-    } catch {
-      return [];
+
+    if (this.prisma.isConnected) {
+      try {
+        const events = await this.prisma.detectionEvent.findMany({
+          where: { symbol: cleanSymbol },
+          orderBy: { detectedAt: 'desc' },
+          take: 50
+        });
+        if (events.length > 0) return events;
+      } catch {}
     }
+
+    return this.detectorService.getMemoryEvents(cleanSymbol);
   }
 }
