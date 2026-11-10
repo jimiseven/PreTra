@@ -1,0 +1,205 @@
+ESPECIFICACIÓN TÉCNICA Y PROMPT DE IMPLEMENTACIÓN PARA CODEX
+PROYECTO: FUTURES MOMENTUM & EARLY PLATEAU MONITOR
+VERSIÓN: 1.0 | FECHA: 2026-11-09
+IDIOMA DE LA APLICACIÓN Y DOCUMENTACIÓN: ESPAÑOL
+
+====================================================================
+0. INSTRUCCIÓN DIRECTA PARA CHATGPT CODEX
+====================================================================
+Actúa como ingeniero senior full-stack. Implementa desde cero un monorepositorio funcional, documentado, probado y ejecutable localmente en Ubuntu, según esta especificación. No entregues únicamente propuestas: crea los archivos, código, migraciones, pruebas, Docker Compose, README y configuración de ejemplo. Trabaja por etapas verificables, ejecuta tests y corrige errores. Si faltan decisiones menores, toma defaults razonables y documéntalos. No implementes ejecución de operaciones ni conexión a datos privados de cuenta Binance. Prioriza MVP real y robusto antes de funciones opcionales.
+
+====================================================================
+1. VISIÓN Y CONTEXTO DE USO
+====================================================================
+El usuario observa manualmente contratos perpetuos de futuros de Binance (inicialmente USDⓈ-M) que experimentan subidas muy fuertes (+70%, +100%, +150% o más) en períodos de horas o 1-2 días. En algunos casos, tras el impulso, el precio permanece cerca de su máximo en una meseta durante horas, y puede caer durante los siguientes 1-3 días. El objetivo NO es predecir con certeza la caída ni recomendar automáticamente un short: es detectar temprano desaceleración y mesetas, cuantificar movimientos y mostrar evidencia histórica para que el usuario decida por su cuenta.
+
+El usuario selecciona MANUALMENTE hasta 5 monedas nuevas por día; no desea scanner automático de ganadoras en el MVP. A los dos días podría vigilar 10 monedas; debe poder seguir decenas de monedas sin degradación importante. Puede retirar o archivar monedas que ya no interesen. Las monedas anteriores permanecen vigiladas hasta que el usuario las archive o detenga: no caducan automáticamente. La aplicación NO debe registrar shorts, posiciones, apalancamiento, PnL, entradas/salidas ni operar. El usuario puede tener sus propias operaciones fuera de la aplicación; no crear módulo de trading. Contexto exclusivamente para comprender el flujo: operaciones manuales de margen habitual USD 100-150 con x2, pero NO incluir estos datos en la UI ni usarlos para recomendaciones.
+
+El usuario quiere pantalla de escritorio completa y vista móvil resumida. La PC Ubuntu permanecerá encendida todo el día. Primera etapa LOCAL, sin VPS; celular por misma LAN y posteriormente acceso privado mediante Tailscale. Futuro despliegue a VPS económico sin reescribir la aplicación.
+
+====================================================================
+2. ALCANCE FUNCIONAL MVP (OBLIGATORIO)
+====================================================================
+2.1 Alta manual de símbolos
+- Input con autocompletado de símbolos Binance USDⓈ-M válidos (ej.: XYZUSDT, si realmente existe), con validación usando exchangeInfo; nunca inventar instrumentos.
+- Hasta 5 altas nuevas por día como regla configurable (zona horaria de producto America/La_Paz), sin limitar número de monedas ya activas. Si el usuario prefiere no imponer cuota dura, mantener límite configurable por variable de entorno y mostrar contador diario.
+- Prevenir duplicados activos; permitir reactivar símbolo archivado.
+- Al añadir: descargar histórico reciente (default 7 días de velas de 1 minuto cuando sea viable, por lotes/paginación y respetando límites); si la historia no está disponible, indicar cobertura real y no inventar datos. Registrar addedAt, backfillStartedAt, coverageFrom, coverageTo, estado de sincronización.
+- El histórico previo debe permitir estimar el comienzo de una subida que empezó antes del alta.
+
+2.2 Monitoreo
+- Consumir datos públicos Binance Futures mediante REST para backfill y WebSocket para velas de 1 minuto y/o ticker en vivo.
+- Consolidar velas OHLCV de 1 minuto, usando UTC en almacenamiento y hora local Bolivia para presentación.
+- Mantener datos consistentes: clave única (symbol, openTime, interval), upsert idempotente, diferenciar vela parcial de vela cerrada; cálculos históricos con velas cerradas por defecto.
+- Reconectar WebSocket con backoff y jitter, ping/pong o mecanismos de salud pertinentes, suscripción/desuscripción cuando cambia watchlist, resync tras cortes, manejo de errores, límites y reconexiones obligatorias del proveedor. Evitar REST por cada segundo/símbolo.
+- El sistema debe recuperar huecos de velas después de reinicios o caída de internet, reanalizar ventanas afectadas y marcar si alguna alerta es retrospectiva (no enviar como si fuese en vivo).
+- Worker siempre activo independientemente de que haya navegador abierto.
+
+2.3 Variaciones porcentuales y cronología
+- Mostrar precio actual y cambio de precio para 1m, 5m, 15m, 1h, 4h, 12h, 24h, 48h, 72h, y desde comienzo estimado del impulso. Para cada ventana usar precio de referencia apropiado y mostrar timestamp y cobertura; si faltan datos, mostrar N/D.
+- Fórmula: changePct = (P_current / P_reference - 1) * 100. Los retornos de minutos se componen multiplicativamente; NO sumar porcentajes como si fueran aditivos.
+- Mostrar cambio absoluto, máximo observado, distancia al máximo: (P_current / P_peak - 1)*100, tiempo sin nuevo máximo, duración de meseta, rango reciente: (maxHigh-minLow)/minLow*100 (documentar convención).
+- Mostrar velocidad de subida en ventanas comparables: % por minuto observado y retornos por vela, además de % acumulado por hora. Nunca afirmar que un +78% horario equivale a +5% por minuto.
+- Detectar y describir retrospectivamente el inicio APROXIMADO del impulso mediante reglas deterministas documentadas, no como hecho absoluto: por ejemplo, 'impulso estimado iniciado hace 4 h; +78% en la última hora'. Registrar metodología, ventana y nivel de confianza descriptivo/cobertura.
+- Máximo de ventana y máximo desde seguimiento deben distinguirse; el máximo histórico de toda la vida de la moneda no es lo mismo.
+
+2.4 Detector temprano de mesetas
+- Estados: OBSERVACION, IMPULSO_ALCISTA, DESACELERACION, MESETA_TEMPRANA, RUPTURA_BAJISTA, REACELERACION, SIN_DATOS. No asumir que una meseta lleva necesariamente a caída.
+- Reglas iniciales CONFIGURABLES, no umbrales validados: impulso previo >=70% dentro de ventana de 24-48h; velocidad reciente inferior a una fracción de la velocidad del impulso anterior; 3-6h cerca del máximo; rango de consolidación <=5%; distancia al máximo <=3%; tiempo sin nuevos máximos >=3h; confirmación de ruptura mediante pérdida del mínimo de rango y/o retroceso configurable. Estos valores son ejemplos para experimentación y no señales garantizadas.
+- Separar detección temprana (puede surgir antes de 3h con score/progreso y sin etiqueta de confirmación) de meseta establecida. Parametrizar todas las ventanas y umbrales en UI de configuración y backend.
+- Prevenir oscilaciones de estados con histéresis, confirmación por N velas, cooldown de alertas y reglas de salida. Si se rompe el máximo, puede volver a IMPULSO/REACELERACION.
+- Generar explicación legible con hechos verificables: 'subió 124% en 36h; lleva 7h sin nuevo máximo; últimos 60m +0,8%; a 1,4% del máximo'. Evitar 'debes abrir short' o promesas de caída.
+- Registrar versión del algoritmo y parámetros usados en cada evento para reproducibilidad.
+- Señales de volumen, open interest y funding rate son enriquecimientos posteriores; no bloquear MVP por ellos.
+
+2.5 Tabla inteligente (pantalla principal)
+- Tabla ordenable y filtrable con símbolo, precio, cambio 1h, 24h, impulso acumulado, horas sin nuevo máximo, distancia al máximo, estado, edad del seguimiento, última actualización, indicador de cobertura y botón ver detalle/archivar.
+- Filtros: todas, meseta temprana, desaceleración, impulso, ruptura, archivadas; ordenar por prioridad descriptiva, tiempo sin máximo, % de subida y última alerta. La prioridad es de vigilancia, NO consejo financiero.
+- Conteos de monedas activas y estados; contador de altas del día.
+- Actualización sin recargar página (SSE o WebSocket interno del backend al frontend; escoger e implementar uno).
+- Indicar datos obsoletos cuando conexión o worker falla.
+
+2.6 Detalle por moneda
+- Gráfico interactivo de velas con TradingView Lightweight Charts (biblioteca de gráficos, no widget embebido que requiera cuenta), selección de intervalos 1m, 5m, 15m, 1h, 4h; agregación desde velas 1m cuando proceda.
+- Marcas visuales de comienzo estimado de impulso, máximo, comienzo/fin de meseta, ruptura y nuevos máximos; zona sombreada de meseta si viable.
+- Resumen textual y métricas por intervalos. Zoom/pan y ventana 24h/48h/7d.
+- Historial cronológico de eventos de esa moneda, con hora y datos que justificaron cada detección.
+
+2.7 Historial de mesetas
+- Guardar episodios con symbol, startAt, endAt nullable, detectedAt, peakPrice, rangeHigh, rangeLow, duration, riseBeforePct, drawdownAtDetection, metricsSnapshot, algorithmVersion, status y timestamps.
+- Historial consultable incluso tras archivar una moneda. Archivar detiene streams/análisis y conserva eventos y velas por política de retención.
+- Posteriormente evaluar precio a +6h, +12h, +24h, +48h y +72h tras la detección, incluyendo continuaciones alcistas, máximos adversos y datos insuficientes. Esto es análisis retrospectivo, no backtest de trading ni PnL.
+- No seleccionar únicamente casos de caída: conservar falsos positivos y eventos invalidados.
+
+2.8 Vista móvil resumida
+- Misma web Next.js responsive, sin app Android nativa.
+- Tarjetas compactas: símbolo, precio, subida acumulada, cambio 1h, horas sin nuevo máximo, estado, distancia al máximo; filtros rápidos, conteos y toque para ver gráfico y detalle.
+- Optimizar tablas para pantalla pequeña sin scroll horizontal obligatorio; refresco eficiente.
+- Opcional posterior: PWA instalable, notificaciones Telegram. No bloquear MVP.
+
+2.9 Administración
+- Añadir, archivar, reactivar y eliminar definitivamente con confirmación explícita; archivado recomendado por defecto.
+- Configuración de umbrales, ventana de backfill, retención de velas, timezone de visualización y reglas de alertas.
+- Estado del sistema: REST/WebSocket conectados, latencia de última vela, gaps, sincronizaciones fallidas y última evaluación.
+- Acceso local protegido: al menos credenciales simples seguras o acceso restringido a LAN/Tailscale, sin exponer puertos a internet. No guardar secretos en frontend.
+
+====================================================================
+3. STACK Y ARQUITECTURA
+====================================================================
+- Monorepo TypeScript con pnpm workspaces (o Turborepo si aporta valor).
+- Frontend: Next.js (App Router), React, TypeScript estricto, Tailwind CSS, shadcn/ui, TanStack Query, TradingView Lightweight Charts.
+- Backend: NestJS, TypeScript estricto, REST API con OpenAPI/Swagger, validación class-validator o Zod, worker de ingesta y motor de análisis desacoplados de controladores.
+- Persistencia: PostgreSQL + Prisma ORM y migraciones versionadas.
+- Tiempo real interno: SSE o WebSocket (elegir con justificación; SSE suficiente si el cliente solo recibe actualizaciones).
+- Binance: REST público de futuros USDⓈ-M y WebSocket público de mercado; endpoints y límites deben comprobarse en documentación oficial actual antes de codificar. Ejemplos orientativos: exchangeInfo, klines y stream de kline 1m. No usar endpoints de órdenes/cuenta.
+- Infraestructura local: Docker Compose para postgres, backend/worker y frontend; healthchecks, volúmenes persistentes, restart policies, logs; configuración .env.example.
+- Pruebas: Vitest/Jest para cálculos y detector, tests de integración para persistencia, e2e Playwright básico para UI.
+- Observabilidad: logs estructurados, estado de conexión, contadores de gaps y reintentos, health endpoints.
+- Arquitectura modular: market-data (cliente Binance, backfill, streaming), watchlist, candles, metrics, detection-engine, plateau-history, notifications (placeholder), settings, health.
+- Separar proveedor Binance mediante interfaces para tests con datos sintéticos y futura sustitución.
+
+Estructura sugerida:
+/apps/web
+/apps/api
+/apps/worker (opcional, o proceso NestJS separado con el mismo código)
+/packages/shared (DTOs, tipos, enums, validaciones compartidas)
+/infra/docker
+/docs
+
+No sobreingenierizar: una única instancia de PostgreSQL y un solo worker bastan inicialmente; no añadir Kafka, Kubernetes, Redis o ML sin necesidad.
+
+====================================================================
+4. MODELO DE DATOS PROPUESTO
+====================================================================
+WatchlistItem: id, symbol, marketType, status ACTIVE/ARCHIVED, addedAt, archivedAt, notes opcional, syncStatus, coverageFrom, coverageTo, lastCandleAt.
+Candle: id o PK compuesta, symbol, interval, openTime, closeTime, open, high, low, close, volume, isClosed, ingestedAt; índice único symbol+interval+openTime.
+DetectionConfig: id, name, version, isActive, parameters JSON validado, createdAt, updatedAt.
+MarketState: symbol, currentState, lastEvaluatedAt, peakPrice, peakAt, impulseStartAt, currentPlateauStartAt, metrics JSON, algorithmVersion.
+DetectionEvent: id, symbol, eventType, stateFrom, stateTo, detectedAt, effectiveAt, isRetrospective, metricsSnapshot JSON, configVersion, explanation, dedupeKey.
+PlateauEpisode: id, symbol, startedAt, detectedAt, endedAt, peakPrice, rangeHigh, rangeLow, riseBeforePct, drawdownAtDetectionPct, outcome6h/12h/24h/48h/72h nullable o tabla relacionada, algorithmVersion.
+IngestionCheckpoint: symbol, interval, lastClosedCandleAt, lastSyncAt, lastError, retryCount.
+AppSettings: key, value, updatedAt.
+
+Usar tipos DECIMAL/NUMERIC para precios y porcentajes relevantes, evitando errores de precisión monetaria; convertir cuidadosamente para gráficos. UTC en DB; zona America/La_Paz en UI y reglas de 'cinco altas por día'. Mantener integridad referencial e índices por símbolo/tiempo/estado.
+
+====================================================================
+5. API INTERNA ORIENTATIVA
+====================================================================
+GET /api/health
+GET /api/symbols/search?q=
+GET /api/watchlist?status=active
+POST /api/watchlist {symbol}
+PATCH /api/watchlist/:id/archive
+PATCH /api/watchlist/:id/reactivate
+GET /api/coins/:symbol/summary
+GET /api/coins/:symbol/candles?interval=1m&from=&to=
+GET /api/coins/:symbol/events
+GET /api/plateaus?symbol=&from=&to=
+GET /api/settings/detector
+PUT /api/settings/detector
+GET /api/stream (SSE)
+
+Definir DTOs, paginación, validación, manejo de errores, rate limiting local, Swagger y pruebas. API pública de lectura del mercado sin llaves privadas; asegurar administración en LAN/Tailscale.
+
+====================================================================
+6. DETECTOR: DISEÑO Y TESTS
+====================================================================
+Implementar pipeline reproducible sobre velas cerradas:
+1. Verificar cobertura/calidad y ordenar velas por openTime.
+2. Calcular retornos por ventana y métricas de velocidad/volatilidad/rango.
+3. Identificar inicio aproximado del impulso con umbral configurable de retorno y aceleración en ventana rodante; no usar información futura para detección online.
+4. Identificar máximo de impulso, edad del máximo y distancia actual.
+5. Evaluar desaceleración relativa y cercanía al máximo.
+6. Evaluar consolidación temprana y meseta sostenida.
+7. Evaluar ruptura bajista y reanudación alcista.
+8. Aplicar histéresis, deduplicación y cooldown.
+9. Persistir transición, explicación y episodio de meseta.
+10. Publicar actualización a UI.
+
+Pruebas con series sintéticas:
+A) subida +150% y meseta 8h => detectar meseta;
+B) pausa 2h seguida de nuevo +40% => evitar clasificar definitivamente caída;
+C) meseta y ruptura bajista => registrar transición;
+D) meseta y ruptura alcista => invalidar/terminar episodio;
+E) subida sin meseta => no falso positivo;
+F) volatilidad irregular y wick aislado => evitar máximos engañosos (evaluar highs vs closes configurables);
+G) huecos, datos duplicados, velas parciales, reinicio, reconexión;
+H) no look-ahead bias en simulación histórica;
+I) cambios de timezone y reinicio de contador de altas;
+J) backfill de una moneda ya disparada, sin alertas falsas de tiempo real.
+
+Los umbrales no representan una estrategia validada. Documentar precisión/recall de detección si se dispone de etiquetas, y métricas descriptivas de evolución posterior. No presentar 'probabilidad de caída' sin modelo estadístico validado.
+
+====================================================================
+7. DESPLIEGUE LOCAL EN UBUNTU Y ACCESO MÓVIL
+====================================================================
+- Requisitos: Docker Engine y Docker Compose plugin; opcional Node LTS + pnpm para desarrollo.
+- Comandos documentados en README: cp .env.example .env; docker compose up -d --build; migraciones/seed; acceso http://localhost:3000.
+- La aplicación debe escuchar en 0.0.0.0 dentro del contenedor y publicar solo puertos necesarios.
+- En celular conectado al mismo Wi-Fi: http://IP_LAN_PC:3000 (ejemplo 192.168.1.100:3000; NO asumir IP fija). Evitar hardcodear localhost en llamadas del navegador: preferir proxy/rewrite Next.js a API interna de Docker, para que el móvil funcione.
+- Configurar firewall UFW permitiendo puerto web solo desde LAN o interfaz Tailscale. No exponer PostgreSQL ni API de administración públicamente.
+- Acceso fuera de casa: Tailscale en PC y celular, acceso privado por IP/nombre Tailscale, sin abrir puertos del router. Requiere PC encendida e internet. HTTPS/serve de Tailscale opcional según configuración.
+- PC permanece encendida todo el día, pero implementar restart: unless-stopped, recuperación de gaps y logs persistentes.
+- Respaldos periódicos de PostgreSQL, procedimiento de restauración, rotación de logs y política de retención.
+
+====================================================================
+8. FUTURA MIGRACIÓN A VPS
+====================================================================
+Objetivo: desplegar en VPS Linux pequeño (aprox. 2 vCPU, 2-4 GB RAM, 30+ GB SSD según retención), por ejemplo Hetzner/DigitalOcean u otro. Presupuesto ORIENTATIVO de USD 5-15/mes según proveedor/región/recursos/impuestos; verificar precios reales antes de contratar. La API pública de Binance no cobra normalmente por cada consulta de market data, pero tiene límites y políticas que deben comprobarse; no prometer acceso incondicional. Verificar conectividad/región/IP del VPS hacia Binance Futures antes de contratar o migrar.
+
+Preparar desde el inicio:
+- Contenedores portables y .env por entorno, secretos fuera de git.
+- Reverse proxy Caddy o Nginx, HTTPS con dominio propio opcional, autenticación y firewall.
+- PostgreSQL en volumen persistente y backups externos, no exponer puerto 5432.
+- Healthchecks, logs, restart policies, despliegue con Docker Compose y actualizaciones seguras.
+- Procedimiento: backup local -> provisionar VPS -> configurar DNS/HTTPS/seguridad -> copiar backup -> restaurar DB -> levantar servicios -> comprobar WebSocket/backfill/alertas -> cortar tráfico.
+- Evitar doble worker activo durante migración para no duplicar eventos.
+- Acceso móvil desde cualquier lugar por dominio HTTPS o Tailscale.
+- Futuras notificaciones Telegram/PWA opcionales.
+
+====================================================================
+9. FASES DE ENTREGA Y CRITERIOS DE ACEPTACIÓN
+====================================================================
+FASE 1: bootstrap monorepo, Compose, Postgres, Prisma, Swagger, UI base responsive, README. Debe arrancar con un comando y pasar healthcheck.
+FASE 2: integración real de Binance pública, validación de símbolos, watchlist, backfill 7d, streaming 1m, reconexión y recuperación. Mostrar precios y velas reales sin credenciales privadas.
+FASE 3: mé
