@@ -1,0 +1,26 @@
+{
+  "name": "pretra-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Futures Momentum & Early Plateau Monitor - Monorepo",
+  "scripts": {
+    "build": "pnpm -r --filter=!./docs run build",
+    "dev": "pnpm --parallel run dev",
+    "dev:api": "pnpm --filter @pretra/api run dev",
+    "dev:web": "pnpm --filter @pretra/web run dev",
+    "test": "pnpm -r run test",
+    "test:detector": "pnpm --filter @pretra/shared run test",
+    "lint": "pnpm -r run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
+    "db:generate": "pnpm --filter @pretra/api run db:generate",
+    "db:push": "pnpm --filter @pretra/api run db:push",
+    "db:migrate": "pnpm --filter @pretra/api run db:migrate",
+    "db:seed": "pnpm --filter @pretra/api run db:seed"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2"
+  },
+  "packageManager": "pnpm@9.15.4"
+}

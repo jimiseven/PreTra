@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model WatchlistItem {
+  id            String    @id @default(uuid())
+  symbol        String    @unique
+  marketType    String    @default("USDM_FUTURES")
+  status        String    @default("ACTIVE") // ACTIVE, ARCHIVED
+  addedAt       DateTime  @default(now())
+  archivedAt    DateTime?
+  notes         String?
+  syncStatus    String    @default("PENDING") // PENDING, SYNCING, SYNCED, FAILED, STALE
+  coverageFrom  DateTime?
+  coverageTo    DateTime?
+  lastCandleAt  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  candles         Candle[]
+  plateauEpisodes PlateauEpisode[]
+  detectionEvents DetectionEvent[]
+  marketState     MarketState?
+
+  @@index([status])
+  @@index([addedAt])
+}
+
+model Candle {
+  id         String   @id @default(uuid())
+  symbol     String
+  interval   String   @default("1m")
+  openTime   BigInt
+  closeTime  BigInt
+  open       Decimal  @db.Decimal(18, 8)
+  high       Decimal  @db.Decimal(18, 8)
+  low        Decimal  @db.Decimal(18, 8)
+  close      Decimal  @db.Decimal(18, 8)
+  volume     Decimal  @db.Decimal(24, 8)
+  isClosed   Boolean  @default(true)
+  ingestedAt DateTime @default(now())
+
+  watchlistItem WatchlistItem? @relation(fields: [symbol], references: [symbol], onDelete: Cascade)
+
+  @@unique([symbol, interval, openTime])
+  @@index([symbol, openTime])
+}
+
+model MarketState {
+  id                    String    @id @default(uuid())
+  symbol                String    @unique
+  currentState          String    @default("OBSERVACION")
+  lastEvaluatedAt       DateTime  @default(now())
+  peakPrice             Decimal   @db.Decimal(18, 8)
+  peakAt                DateTime
+  impulseStartAt        DateTime?
+  currentPlateauStartAt DateTime?
+  metrics               Json
+  algorithmVersion      String    @default("1.0.0")
+  updatedAt             DateTime  @updatedAt
+
+  watchlistItem WatchlistItem @relation(fields: [symbol], references: [symbol], onDelete: Cascade)
+}
+
+model DetectionEvent {
+  id              String   @id @default(uuid())
+  symbol          String
+  eventType       String
+  stateFrom       String
+  stateTo         String
+  detectedAt      DateTime @default(now())
+  effectiveAt     DateTime
+  isRetrospective Boolean  @default(false)
+  metricsSnapshot Json
+  configVersion   String   @default("1.0.0")
+  explanation     String   @db.Text
+  dedupeKey       String
+
+  watchlistItem WatchlistItem @relation(fields: [symbol], references: [symbol], onDelete: Cascade)
+
+  @@index([symbol, detectedAt])
+  @@index([dedupeKey])
+}
+
+model PlateauEpisode {
+  id                    String    @id @default(uuid())
+  symbol                String
+  startedAt             DateTime
+  detectedAt            DateTime  @default(now())
+  endedAt               DateTime?
+  peakPrice             Decimal   @db.Decimal(18, 8)
+  rangeHigh             Decimal   @db.Decimal(18, 8)
+  rangeLow              Decimal   @db.Decimal(18, 8)
+  riseBeforePct         Decimal   @db.Decimal(8, 2)
+  drawdownAtDetectionPct Decimal  @db.Decimal(8, 2)
+  status                String    @default("IN_PROGRESS")
+  metricsSnapshot       Json
+  outcomes              Json?
+  algorithmVersion      String    @default("1.0.0")
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  watchlistItem WatchlistItem @relation(fields: [symbol], references: [symbol], onDelete: Cascade)
+
+  @@index([symbol, startedAt])
+  @@index([status])
+}
+
+model IngestionCheckpoint {
+  id                 String    @id @default(uuid())
+  symbol             String    @unique
+  interval           String    @default("1m")
+  lastClosedCandleAt BigInt?
+  lastSyncAt         DateTime?
+  lastError          String?
+  retryCount         Int       @default(0)
+}
+
+model AppSettings {
+  key       String   @id
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}

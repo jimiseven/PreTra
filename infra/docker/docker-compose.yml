@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pretra-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pretra_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pretra_password}
+      POSTGRES_DB: ${POSTGRES_DB:-pretra_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pretra_user} -d ${POSTGRES_DB:-pretra_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pretra-network
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    container_name: pretra-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      API_PORT: 3001
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-pretra_user}:${POSTGRES_PASSWORD:-pretra_password}@postgres:5432/${POSTGRES_DB:-pretra_db}?schema=public"
+      BINANCE_FUTURES_REST_URL: ${BINANCE_FUTURES_REST_URL:-https://fapi.binance.com}
+      BINANCE_FUTURES_WS_URL: ${BINANCE_FUTURES_WS_URL:-wss://fstream.binance.com}
+      MAX_DAILY_SYMBOLS: ${MAX_DAILY_SYMBOLS:-5}
+      TIMEZONE: ${TIMEZONE:-America/La_Paz}
+      DEFAULT_BACKFILL_DAYS: ${DEFAULT_BACKFILL_DAYS:-7}
+    ports:
+      - "3001:3001"
+    networks:
+      - pretra-network
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.web
+    container_name: pretra-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      INTERNAL_API_URL: "http://api:3001"
+      NEXT_PUBLIC_API_URL: "http://localhost:3001"
+    ports:
+      - "0.0.0.0:3000:3000"
+    networks:
+      - pretra-network
+
+volumes:
+  postgres_data:
+    name: pretra_postgres_data
+
+networks:
+  pretra-network:
+    name: pretra-network
