@@ -19,7 +19,7 @@ export default function RootLayout({
         <Providers>
           {/* Header Superior Principal */}
           <header className="sticky top-0 z-40 w-full border-b border-border bg-surface/90 backdrop-blur-md">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+            <div className="max-w-[1700px] mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
               
               {/* Marca y Subtítulo */}
               <div className="flex items-center gap-3">
@@ -75,8 +75,8 @@ export default function RootLayout({
             </div>
           </header>
 
-          {/* Contenido Principal */}
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
+          {/* Contenido Principal Responsivo para Todo Tipo de Pantallas */}
+          <main className="flex-1 max-w-[1700px] w-full mx-auto px-3 sm:px-6 lg:px-8 py-5">
             {children}
           </main>
 

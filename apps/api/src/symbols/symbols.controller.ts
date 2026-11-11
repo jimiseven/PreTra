@@ -18,4 +18,12 @@ export class SymbolsController {
     }
     return all.filter(s => s.symbol.includes(query)).slice(0, 20);
   }
+
+  @Get('top-gainers')
+  @ApiOperation({ summary: 'Obtiene las monedas con mayores subidas (top gainers) de Binance Futures' })
+  @ApiQuery({ name: 'limit', required: false, example: '20' })
+  async getTopGainers(@Query('limit') limitStr: string = '20') {
+    const limit = Math.min(50, parseInt(limitStr, 10) || 20);
+    return this.binanceService.getTopGainers(limit);
+  }
 }

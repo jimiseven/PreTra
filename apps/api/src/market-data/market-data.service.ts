@@ -193,7 +193,118 @@ export class MarketDataService implements OnModuleInit {
     this.binanceService.subscribeSymbol(symbol);
   }
 
-  getCandles(symbol: string): Candle[] {
-    return this.candleBuffers.get(symbol) || [];
+  private getIntervalMs(interval: string): number {
+    switch (interval) {
+      case '1m': return 60_000;
+      case '3m': return 3 * 60_000;
+      case '5m': return 5 * 60_000;
+      case '15m': return 15 * 60_000;
+      case '30m': return 30 * 60_000;
+      case '1h': return 60 * 60_000;
+      case '2h': return 2 * 60 * 60_000;
+      case '4h': return 4 * 60 * 60_000;
+      case '12h': return 12 * 60 * 60_000;
+      case '1d': return 24 * 60 * 60_000;
+      default: return 60_000;
+    }
+  }
+
+  resampleCandles(candles: Candle[], interval: string): Candle[] {
+    const intervalMs = this.getIntervalMs(interval);
+    if (intervalMs <= 60_000 || !candles || candles.length === 0) {
+      return candles;
+    }
+
+    const buckets = new Map<number, Candle[]>();
+    for (const c of candles) {
+      const bucketTime = Math.floor(c.openTime / intervalMs) * intervalMs;
+      let b = buckets.get(bucketTime);
+      if (!b) {
+        b = [];
+        buckets.set(bucketTime, b);
+      }
+      b.push(c);
+    }
+
+    const resampled: Candle[] = [];
+    const sortedBucketTimes = Array.from(buckets.keys()).sort((a, b) => a - b);
+    for (const bucketTime of sortedBucketTimes) {
+      const group = buckets.get(bucketTime)!;
+      if (group.length === 0) continue;
+
+      const open = group[0].open;
+      const close = group[group.length - 1].close;
+      let high = -Infinity;
+      let low = Infinity;
+      let volume = 0;
+
+      for (const c of group) {
+        if (c.high > high) high = c.high;
+        if (c.low < low) low = c.low;
+        volume += c.volume;
+      }
+
+      resampled.push({
+        symbol: group[0].symbol,
+        interval,
+        openTime: bucketTime,
+        closeTime: bucketTime + intervalMs - 1,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        isClosed: group[group.length - 1].isClosed
+      });
+    }
+
+    return resampled;
+  }
+
+  getCandles(symbol: string, interval: string = '1m'): Candle[] {
+    const raw = this.candleBuffers.get(symbol) || [];
+    if (interval === '1m') return raw;
+    return this.resampleCandles(raw, interval);
+  }
+
+  /**
+   * Refresca un símbolo consultando las últimas velas directamente desde Binance REST y reevalúa
+   */
+  async refreshSymbol(symbol: string): Promise<void> {
+    try {
+      const now = Date.now();
+      const recentCandles = await this.binanceService.fetchHistoricalKlines(
+        symbol,
+        now - 2 * 60 * 60_000,
+        now,
+        '1m'
+      );
+
+      if (recentCandles && recentCandles.length > 0) {
+        let buffer = this.candleBuffers.get(symbol);
+        if (!buffer) {
+          buffer = [];
+          this.candleBuffers.set(symbol, buffer);
+        }
+
+        for (const rc of recentCandles) {
+          const idx = buffer.findIndex(c => c.openTime === rc.openTime);
+          if (idx >= 0) {
+            buffer[idx] = rc;
+          } else {
+            buffer.push(rc);
+          }
+        }
+
+        buffer.sort((a, b) => a.openTime - b.openTime);
+        if (buffer.length > this.MAX_BUFFER_CANDLES) {
+          this.candleBuffers.set(symbol, buffer.slice(-this.MAX_BUFFER_CANDLES));
+        }
+
+        await this.detectorService.evaluateCoin(symbol, this.candleBuffers.get(symbol)!, false);
+      }
+    } catch (err) {
+      this.logger.warn(`No se pudo refrescar ${symbol} desde Binance: ${err?.message || err}`);
+    }
   }
 }

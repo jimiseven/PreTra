@@ -22,7 +22,7 @@ export class BinancePublicService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(BinancePublicService.name);
   private readonly restClient: AxiosInstance;
   private readonly restBaseUrl = process.env.BINANCE_FUTURES_REST_URL || 'https://fapi.binance.com';
-  private readonly wsBaseUrl = process.env.BINANCE_FUTURES_WS_URL || 'wss://fstream.binance.com';
+  private readonly wsBaseUrl = process.env.BINANCE_FUTURES_WS_URL || 'wss://fstream.binance.com/market';
 
   private ws: WebSocket | null = null;
   private subscribedSymbols = new Set<string>();
@@ -79,6 +79,115 @@ export class BinancePublicService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       this.logger.error(`Error al consultar exchangeInfo de Binance: ${error?.message || error}`);
       return [];
+    }
+  }
+
+  /**
+   * Obtiene las monedas con mayores subidas (top gainers) de Binance Futures USDⓈ-M
+   */
+  async getTopGainers(limit: number = 20): Promise<Array<{
+    symbol: string;
+    priceChangePercent: number;
+    lastPrice: number;
+    highPrice: number;
+    lowPrice: number;
+    quoteVolume: number;
+  }>> {
+    try {
+      const response = await this.restClient.get('/fapi/v1/ticker/24hr');
+      const all: any[] = response.data || [];
+      const usdtPerp = all
+        .filter(t => t.symbol && t.symbol.endsWith('USDT'))
+        .map(t => ({
+          symbol: t.symbol,
+          priceChangePercent: parseFloat(t.priceChangePercent) || 0,
+          lastPrice: parseFloat(t.lastPrice) || 0,
+          highPrice: parseFloat(t.highPrice) || 0,
+          lowPrice: parseFloat(t.lowPrice) || 0,
+          quoteVolume: parseFloat(t.quoteVolume) || 0
+        }))
+        .sort((a, b) => b.priceChangePercent - a.priceChangePercent);
+
+      return usdtPerp.slice(0, limit);
+    } catch (error) {
+      this.logger.error(`Error al consultar top gainers de Binance: ${error?.message || error}`);
+      return [];
+    }
+  }
+
+  /**
+   * Obtiene métricas de Open Interest e historial reciente para calcular variación en 1h
+   */
+  async getOpenInterest(symbol: string): Promise<{
+    currentOiValueUsd: number | null;
+    oiChange1hPct: number | null;
+    oiChange24hPct: number | null;
+  }> {
+    try {
+      const response = await this.restClient.get('/futures/data/openInterestHist', {
+        params: {
+          symbol: symbol.toUpperCase(),
+          period: '5m',
+          limit: 30
+        }
+      });
+      const data: any[] = response.data || [];
+      if (!Array.isArray(data) || data.length === 0) {
+        return { currentOiValueUsd: null, oiChange1hPct: null, oiChange24hPct: null };
+      }
+
+      const latest = data[data.length - 1];
+      const currentOiValueUsd = parseFloat(latest.sumOpenInterestValue) || null;
+
+      // 12 periodos de 5m = 60 minutos
+      let oiChange1hPct: number | null = null;
+      if (data.length >= 13) {
+        const oneHourAgo = data[data.length - 13];
+        const prevVal = parseFloat(oneHourAgo.sumOpenInterestValue);
+        if (prevVal > 0 && currentOiValueUsd) {
+          oiChange1hPct = parseFloat((((currentOiValueUsd - prevVal) / prevVal) * 100).toFixed(2));
+        }
+      } else if (data.length > 1) {
+        const first = data[0];
+        const prevVal = parseFloat(first.sumOpenInterestValue);
+        if (prevVal > 0 && currentOiValueUsd) {
+          oiChange1hPct = parseFloat((((currentOiValueUsd - prevVal) / prevVal) * 100).toFixed(2));
+        }
+      }
+
+      return {
+        currentOiValueUsd,
+        oiChange1hPct,
+        oiChange24hPct: null
+      };
+    } catch (error: any) {
+      this.logger.warn(`Error al consultar Open Interest para ${symbol}: ${error?.message || error}`);
+      return { currentOiValueUsd: null, oiChange1hPct: null, oiChange24hPct: null };
+    }
+  }
+
+  /**
+   * Obtiene la tasa de financiamiento (Funding Rate) y próximo horario de liquidación
+   */
+  async getFundingRate(symbol: string): Promise<{
+    fundingRatePct: number | null;
+    nextFundingTime: number | null;
+    markPrice: number | null;
+  }> {
+    try {
+      const response = await this.restClient.get('/fapi/v1/premiumIndex', {
+        params: { symbol: symbol.toUpperCase() }
+      });
+      const data = response.data || {};
+      const rawRate = parseFloat(data.lastFundingRate);
+      const fundingRatePct = !isNaN(rawRate) ? parseFloat((rawRate * 100).toFixed(4)) : null;
+      const nextFundingTime = data.nextFundingTime ? Number(data.nextFundingTime) : null;
+      const markPrice = data.markPrice ? parseFloat(data.markPrice) : null;
+
+      return { fundingRatePct, nextFundingTime, markPrice };
+    } catch (error: any) {
+      this.logger.warn(`Error al consultar Funding Rate para ${symbol}: ${error?.message || error}`);
+      return { fundingRatePct: null, nextFundingTime: null, markPrice: null };
     }
   }
 
@@ -149,6 +258,37 @@ export class BinancePublicService implements OnModuleInit, OnModuleDestroy {
 
     this.logger.log(`Backfill completado para ${symbol}: ${allCandles.length} velas descargadas.`);
     return allCandles;
+  }
+
+  /**
+   * Obtiene velas directamente de Binance para cualquier intervalo (ej. 1d, 12h, 4h, 1h, 15m, 5m, 1m)
+   */
+  async fetchDirectKlines(symbol: string, interval: string = '1d', limit: number = 200): Promise<Candle[]> {
+    try {
+      const response = await this.restClient.get('/fapi/v1/klines', {
+        params: {
+          symbol: symbol.toUpperCase(),
+          interval,
+          limit: Math.min(1500, limit)
+        }
+      });
+      const rawData: any[] = response.data || [];
+      return rawData.map(row => ({
+        symbol: symbol.toUpperCase(),
+        interval,
+        openTime: Number(row[0]),
+        closeTime: Number(row[6]),
+        open: parseFloat(row[1]),
+        high: parseFloat(row[2]),
+        low: parseFloat(row[3]),
+        close: parseFloat(row[4]),
+        volume: parseFloat(row[5]),
+        isClosed: true
+      }));
+    } catch (error: any) {
+      this.logger.error(`Error en fetchDirectKlines para ${symbol} (${interval}): ${error?.message || error}`);
+      return [];
+    }
   }
 
   /**

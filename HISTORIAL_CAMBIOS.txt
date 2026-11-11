@@ -1,0 +1,232 @@
+================================================================================
+                           PRETRA - REGISTRO DE CAMBIOS Y MODIFICACIONES
+                      (Futures Momentum & Early Plateau Monitor)
+================================================================================
+
+Este archivo documenta cronológicamente todas las modificaciones, características
+implementadas, correcciones de errores y decisiones arquitectónicas que han sido
+aprobadas y desplegadas en el sistema PreTra.
+
+REGLA DE MANTENIMIENTO:
+Cada vez que se añada, modifique o corrija una funcionalidad en el código, este
+archivo DEBE actualizarse con la fecha, descripción técnica del cambio, componentes
+afectados y estado de verificación.
+
+--------------------------------------------------------------------------------
+FECHA: 2026-11-10
+VERSIÓN: 1.0.0 - INICIALIZACIÓN Y ARQUITECTURA BASE
+--------------------------------------------------------------------------------
+[ESTADO: APROBADO Y OPERATIVO]
+
+1. Configuración de Monorepo (pnpm workspaces):
+   - `packages/shared`: Modelos de dominio, tipos TypeScript, configuración y motor
+     de detección de estados matemáticamente determinista.
+   - `apps/api`: Backend en NestJS (Fastify/Node.js), TypeORM, SQLite3, WebSocket
+     y SSE para streaming en tiempo real.
+   - `apps/web`: Frontend en Next.js 14 (App Router), React 18, TailwindCSS,
+     TanStack React Query y Lightweight Charts de TradingView.
+
+2. Motor de Detección Determinista (packages/shared/src/engine/detector.ts):
+   - Detección de estados:
+     * SEGUIMIENTO_NORMAL: Oscilación estándar sin anomalías de volumen o precio.
+     * IMPULSO_ALCISTA: Subida rápida con volumen creciente y nuevos máximos.
+     * DESACELERACION: Pérdida de inercia alcista, velas pequeñas tras un rally.
+     * MESETA_TEMPRANA: Congelación o consolidación estrecha cerca del máximo.
+     * RUPTURA_BAJISTA: Quiebre de la base de la meseta o medias móviles clave.
+   - Cálculo de métricas: ATR, volumen relativo (RVol), distancia al máximo (ATH),
+     horas sin nuevo máximo, pendiente EMA, score de prioridad de alerta (0 a 100).
+
+3. Cuota Diaria y Zona Horaria (America/La_Paz, UTC-4):
+   - Límite estricto de altas manuales: máximo 5 contratos nuevos por día calendario.
+   - Reseteo automático a las 00:00:00 hora de Bolivia (America/La_Paz).
+   - Bloqueo a nivel de backend y UI cuando se alcanza la cuota.
+
+4. Integración con Binance Futures USDⓈ-M (Modo Solo Lectura Pública):
+   - Conexión a streams públicos de Binance (Ticker 24h, Kline 5m, Mark Price).
+   - Sin uso de API Keys privadas ni endpoints de trading (cero riesgo de capital).
+   - Resincronización periódica de velas OHLCV históricas (150 a 500 velas de 5m).
+
+--------------------------------------------------------------------------------
+FECHA: 2026-11-10 - 2026-11-11
+VERSIÓN: 1.1.0 - MEJORAS DE NAVEGACIÓN Y MULTI-PANTALLA
+--------------------------------------------------------------------------------
+[ESTADO: APROBADO Y OPERATIVO]
+
+1. Paginación y Filtrado en SmartTable:
+   - Controles de paginación (10, 20 o 50 contratos por página) con botones
+     "Anterior", "Siguiente" y salto numérico directo.
+   - Filtros por estado: Todas activas, Meseta Temprana, Desaceleración, Impulso,
+     Ruptura y Archivadas.
+   - Ordenamiento por Score de Prioridad, Horas sin Máximo, Impulso %, Precio y Rango.
+
+2. Vista Panorama Multi-Gráficos (MultiChartView):
+   - Modo de visualización simultánea de 1, 2, 3, 4 o 5 gráficos en una sola pantalla.
+   - Controles independientes por tarjeta para cambiar de contrato y temporalidad.
+   - Resumen de métricas clave (precio, score, estado, horas sin nuevo máximo) encima
+     de cada gráfico interactivo.
+
+3. Soporte para Múltiples Temporalidades (OHLCV Resampling):
+   - Soporte para velas de 5m, 15m, 1h y 4h.
+   - Agrupación determinista de velas en backend (`resampleCandles`) para garantizar
+     que los intervalos mayores reflejen fielmente aperturas, máximos, mínimos,
+     cierres y volúmenes acumulados.
+
+--------------------------------------------------------------------------------
+FECHA: 2026-11-11
+VERSIÓN: 1.2.0 - CRITERIO AVANZADO DE MESETA ESTRECHA (≤ 2%)
+--------------------------------------------------------------------------------
+[ESTADO: APROBADO Y OPERATIVO]
+
+1. Detección de Subida Sostenida de 5 Días + Rango Estrecho:
+   - Se incorporó la métrica `surge5dPct` (subida acumulada en los últimos 5 días
+     o hasta 120 horas de velas continuas).
+   - Se agregaron ventanas de oscilación de corto y mediano plazo:
+     * `range30mPct`: (Máximo - Mínimo) / Mínimo en los últimos 30 minutos.
+     * `range1hPct`: Oscilación porcentual en la última hora.
+     * `range2hPct`: Oscilación porcentual en las últimas 2 horas.
+     * `range4hPct`: Oscilación porcentual en las últimas 4 horas.
+   - Criterio de Meseta Estrecha (`isTightPlateau`):
+     Si el precio tuvo un rally sostenido previo y en las últimas 2 horas (o 30m)
+     la fluctuación total entre máximo y mínimo no supera el 2.0% (`range2hPct <= 2.0%`
+     o `range30mPct <= 2.0%`) sin marcar nuevos máximos cerca del pico, el sistema
+     clasifica automáticamente el contrato como `MESETA_TEMPRANA`.
+   - Diagnóstico visible: La tabla y la ficha de la moneda muestran los porcentajes
+     exactos de oscilación (`Rango 30m`, `Rango 2h`, `Subida 5d`) y la justificación.
+
+--------------------------------------------------------------------------------
+FECHA: 2026-11-11
+VERSIÓN: 1.3.0 - INTERACCIÓN DE GRÁFICOS, ESCÁNER TOP Y GESTIÓN DE TABLA
+--------------------------------------------------------------------------------
+[ESTADO: APROBADO Y OPERATIVO]
+
+1. Corrección de Desplazamiento y Zoom en Gráficos (CoinChart):
+   - Problema resuelto: El gráfico se reseteaba automáticamente al arrastrarlo o
+     hacer zoom cada vez que llegaba una vela o tick en tiempo real.
+   - Solución: Se implementó un control mediante `isFirstLoadRef` para que `fitContent()`
+     solo se ejecute en la carga inicial o al cambiar de temporalidad.
+   - Se añadieron opciones completas de interacción en Lightweight Charts:
+     `horzTouchDrag: true`, `vertTouchDrag: true`, `mouseWheel: true`, `pinch: true`.
+   - Se incorporó un botón "🎯 Recentrar" para volver a la vista por defecto a demanda.
+
+2. Escáner de Top Ganadoras de Binance Futures con 1 Clic (TopGainersModal):
+   - Nuevo endpoint de backend: `GET /api/symbols/top-gainers?limit=25`.
+   - Consulta el endpoint público `/fapi/v1/ticker/24hr` de Binance Futures,
+     filtra contratos activos USDⓈ-M, y los ordena de mayor a menor subida de 24h.
+   - En la interfaz se agregó el botón "🚀 Top Ganadoras" en la cabecera.
+   - Permite al usuario revisar las monedas en fuerte subida y añadirlas a su tabla
+     de seguimiento con un solo clic, respetando la cuota diaria de 5 altas.
+
+3. Eliminación Directa de Monedas en la Tabla Principal (SmartTable):
+   - Checkboxes universales disponibles en todas las vistas (Activas, Meseta,
+     Desaceleración, Impulso, Ruptura y Archivadas).
+   - Botón de eliminación individual (ícono de papelera) por fila en monedas activas.
+   - Barra flotante de eliminación masiva ("Eliminar seleccionadas (N)") con modal
+     de confirmación para evitar borrados accidentales.
+   - Endpoints de backend:
+     * `DELETE /api/watchlist/:id` (eliminación individual)
+     * `POST /api/watchlist/bulk-delete` (eliminación múltiple de IDs)
+
+4. Auto-Actualización Silenciosa e Indicador de Sincronización:
+   - Eliminados mensajes invasivos de "actualizando" en el cuerpo de la página.
+   - Se añadió un indicador visual sutil verde esmeralda con pulso ("● Actualizado HH:MM:SS")
+     que confirma que los datos y métricas están sincronizados en tiempo real
+     sin provocar saltos de diseño ni recargas molestas.
+   - Botón de actualización manual compacto para forzar re-cálculo si el usuario lo desea.
+
+5. Persistencia Resiliente Local (watchlist_store.json):
+   - Almacenamiento dual automático: Si una instancia PostgreSQL externa no está
+     disponible, el sistema guarda y sincroniza el estado completo de la lista de
+     seguimiento en un archivo local `watchlist_store.json`.
+   - Garantiza que las monedas añadidas, archivadas o eliminadas sobrevivan a
+     reinicios del backend sin pérdida de datos en desarrollo o despliegues ligeros.
+
+--------------------------------------------------------------------------------
+FECHA: 2026-11-11
+VERSIÓN: 1.4.0 - MICROESTRUCTURA (OI, ABSORCIÓN, FUNDING), BITÁCORA IA Y RESPONSIVE
+--------------------------------------------------------------------------------
+[ESTADO: APROBADO Y OPERATIVO]
+
+1. Divergencia de Open Interest (Interés Abierto):
+   - Integración con el endpoint público de Binance `/futures/data/openInterestHist`.
+   - Cálculo automático de variación porcentual de OI en 1 hora (`oiChange1hPct`) y
+     valor nominal en USD (`oiValueUsd`).
+   - Algoritmo de detección de divergencias en meseta:
+     * `EXHAUSTION_DROP`: El precio está en meseta pero el OI cae más del 2.5%,
+       indicando salida o cierre masivo de posiciones alcistas (agotamiento).
+     * `ABSORPTION_SPIKE`: El precio está contenido pero el OI sube más del 3.5%,
+       indicando absorción pasiva o entrada agresiva de vendedores.
+     * `NEUTRAL`: Sin divergencias atípicas.
+
+2. Detección de Clímax de Volumen y Absorción (Mechas Superiores):
+   - Algoritmo geométrico de análisis de velas recientes: calcula el porcentaje
+     exacto de mecha superior (`upperWickPct`) y el ratio de volumen respecto a la
+     media móvil de 60 velas (`climaxVolumeRatio`).
+   - Detección de `HEAVY_ABSORPTION` y `MODERATE_ABSORPTION` cuando una vela de rechazo
+     presenta una mecha superior >= 40%-55% acompañada de volumen 2x a 4x superior
+     a la media (venta institucional pasiva frente a compradores minoristas).
+
+3. Monitoreo de Funding Rate y Riesgo de Liquidación:
+   - Integración en tiempo real con `/fapi/v1/premiumIndex` de Binance Futures.
+   - Cálculo de la tasa de financiamiento por periodo (8h) y proyección anualizada APR.
+   - Evaluación de riesgo de liquidación (`ALTO`, `MEDIO`, `BAJO`) ante hacinamiento
+     extremo de posiciones largas (`EXTREME_LONG_CROWD`).
+
+4. Bitácora de Auditoría para IA & Descarga CSV Post-Mortem:
+   - Nuevo endpoint de backend: `GET /api/coins/:symbol/audit-export`.
+   - Generación y descarga directa en el navegador de un archivo CSV con metadatos
+     completos, diagnóstico del motor y 100 velas históricas en 15m con cálculo de
+     mechas, rangos y volumen.
+   - Botón de 1 clic para copiar un prompt estructurado de auditoría cuantitativa,
+     diseñado específicamente para pegar en modelos de IA (ChatGPT, Claude, Gemini)
+     y solicitar un análisis de microestructura y niveles de soporte crítico.
+   - Vista previa desplegable del prompt generado en la ficha del contrato.
+
+5. Optimización Responsiva para Cualquier Monitor y Móviles:
+   - Monitores Ultrawide / 4K / 1440p: Contenedores fluidos `max-w-[1700px]` que
+     distribuyen armónicamente los paneles de gráficos y tablas de alta densidad.
+   - Dispositivos Móviles (Smartphones):
+     * Tarjetas de alta densidad táctil (`block md:hidden`) para la tabla de seguimiento,
+       evitando barras de desplazamiento horizontal incómodas en pantallas estrechas.
+     * Checkboxes de selección masiva integrados directamente en las tarjetas móviles.
+     * Botones de acción directa (Eliminar individual, Archivar, Bitácora & Análisis).
+     * Indicadores compactos de OI, mechas de absorción y Funding Rate.
+     * Grid multi-gráficos que se colapsa automáticamente a 1 columna en móviles.
+
+--------------------------------------------------------------------------------
+FECHA: 2026-11-11
+VERSIÓN: 1.5.0 - AUTO-ACTUALIZACIÓN 1S, PRECIO HERO, MULTI-GRÁFICOS MONO-MONEDA Y 1D
+--------------------------------------------------------------------------------
+[ESTADO: APROBADO Y OPERATIVO]
+
+1. Auto-Actualización de Gráficos en Vivo Cada Segundo (1s Real-Time Tick):
+   - Se implementó en `CoinChart` un mecanismo continuo de actualización a 1 segundo
+     utilizando la API nativa `series.update()` de Lightweight Charts.
+   - La última vela y el precio actual se refrescan en tiempo real cada segundo sin
+     parpadeos, sin recargar la página y respetando el zoom/pan manual del usuario.
+
+2. Banner Visual Hero de Precio en Grande:
+   - En la ficha de detalle de cada moneda (`/coins/[symbol]`) se incorporó un banner
+     hero visual con el precio en tipografía gigante (`text-6xl font-black font-mono`).
+   - Muestra de forma inmediata: precio actual en vivo, badge de variación de 24h y 1h,
+     máximo de sesión (ATH), distancia porcentual al techo, horas sin ATH e indicador
+     de pulso en vivo verde ("En Vivo - Actualización cada 1s").
+
+3. Vista Multi-Gráficos Simultáneos para la Misma Moneda (1, 2, 3 o 4 Gráficos):
+   - Selector interactivo en la ficha de detalle para abrir 1, 2, 3 o 4 gráficos
+     simultáneos del mismo contrato.
+   - Cada panel cuenta con su propio selector de temporalidad independiente
+     (por ejemplo: Gráfico 1 en 1m, Gráfico 2 en 15m, Gráfico 3 en 1h, Gráfico 4 en 1D)
+     y su botón individual de "🎯 Recentrar".
+   - Todos los gráficos del contrato se sincronizan y actualizan de forma continua
+     cada segundo.
+
+4. Soporte para Temporalidad Diaria (1D) y 12 Horas:
+   - Se añadió en el backend el método `fetchDirectKlines` en `BinancePublicService`
+     y se integró en `CoinsController` para servir velas diarias oficiales (`1d`)
+     y de `12h` directamente desde Binance Futures.
+   - Se incorporaron los botones de temporalidad `12h` y `1D (Día)` en todos los
+     selectores de gráficos de la aplicación.
+
+================================================================================
+FIN DEL HISTORIAL - ÚLTIMA ACTUALIZACIÓN: 2026-11-11
+================================================================================

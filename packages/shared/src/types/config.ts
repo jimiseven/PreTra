@@ -12,7 +12,9 @@ export const DetectionConfigSchema = z.object({
   breakdownPullbackPct: z.number().min(1.0).max(30).default(4.0), // Retroceso para confirmar ruptura bajista
   confirmationCandles: z.number().min(1).max(30).default(3), // N velas consecutivas para confirmar cambio de estado
   cooldownMinutes: z.number().min(0).max(1440).default(60), // Cooldown entre alertas repetidas del mismo estado
-  useClosesForPeaks: z.boolean().default(false) // Si true usa close; si false usa high
+  useClosesForPeaks: z.boolean().default(false), // Si true usa close; si false usa high
+  tightPlateauThresholdPct: z.number().min(0.1).max(10).default(2.0), // Subidas y bajas <= 2% para meseta
+  tightPlateauWindowMinutes: z.number().min(15).max(720).default(120) // Rango de temporalidad (30m, 1h, 2h)
 });
 
 export type DetectionConfig = z.infer<typeof DetectionConfigSchema>;
@@ -20,14 +22,16 @@ export type DetectionConfig = z.infer<typeof DetectionConfigSchema>;
 export const DEFAULT_DETECTION_CONFIG: DetectionConfig = {
   version: '1.0.0',
   minImpulsePct: 70.0,
-  impulseWindowHours: 48.0,
+  impulseWindowHours: 120.0, // 5 días de ventana para analizar subida sostenida previa
   plateauMaxRangePct: 5.0,
-  plateauMaxDistanceToPeakPct: 3.0,
+  plateauMaxDistanceToPeakPct: 3.5,
   minHoursWithoutNewHigh: 3.0,
   earlyPlateauMinHours: 1.5,
   velocityDropFraction: 0.35,
   breakdownPullbackPct: 4.0,
   confirmationCandles: 3,
   cooldownMinutes: 60,
-  useClosesForPeaks: false
+  useClosesForPeaks: false,
+  tightPlateauThresholdPct: 2.0,
+  tightPlateauWindowMinutes: 120
 };

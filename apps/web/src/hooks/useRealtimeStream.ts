@@ -8,6 +8,7 @@ export interface LiveTicker {
   price: number;
   change1h?: number | null;
   change24h?: number | null;
+  changes?: Record<string, number | null>;
   state?: CoinState;
   distanceToPeakPct?: number;
   hoursWithoutNewHigh?: number;

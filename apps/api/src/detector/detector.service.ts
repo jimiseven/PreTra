@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SseService } from '../sse/sse.service';
+import { BinancePublicService } from '../binance/binance-public.service';
 import {
   evaluatePlateauDetector,
   Candle,
@@ -17,13 +18,18 @@ export class DetectorService {
   private currentConfig: DetectionConfig = { ...DEFAULT_DETECTION_CONFIG };
   private activeStatesCache = new Map<string, { state: CoinState; metrics: MetricsSnapshot }>();
 
+  // Caché de Open Interest y Funding Rate
+  private oiCache = new Map<string, { data: any; updatedAt: number }>();
+  private fundingCache = new Map<string, { data: any; updatedAt: number }>();
+
   // Almacén en memoria para eventos y episodios
   private memoryEvents = new Map<string, any[]>();
   private memoryEpisodes: any[] = [];
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly sseService: SseService
+    private readonly sseService: SseService,
+    private readonly binanceService: BinancePublicService
   ) {}
 
   getConfig(): DetectionConfig {
@@ -46,6 +52,33 @@ export class DetectorService {
   ) {
     if (!candles || candles.length === 0) return null;
 
+    // Obtener o refrescar Open Interest y Funding Rate de Binance si no es backfill y expiró caché (60s)
+    let openInterestData = null;
+    let fundingData = null;
+
+    if (!isBackfill) {
+      const now = Date.now();
+      let oiEntry = this.oiCache.get(symbol);
+      if (!oiEntry || now - oiEntry.updatedAt > 60_000) {
+        try {
+          const oi = await this.binanceService.getOpenInterest(symbol);
+          oiEntry = { data: oi, updatedAt: Date.now() };
+          this.oiCache.set(symbol, oiEntry);
+        } catch {}
+      }
+      openInterestData = oiEntry?.data || null;
+
+      let fundingEntry = this.fundingCache.get(symbol);
+      if (!fundingEntry || now - fundingEntry.updatedAt > 60_000) {
+        try {
+          const f = await this.binanceService.getFundingRate(symbol);
+          fundingEntry = { data: f, updatedAt: Date.now() };
+          this.fundingCache.set(symbol, fundingEntry);
+        } catch {}
+      }
+      fundingData = fundingEntry?.data || null;
+    }
+
     const previousCache = this.activeStatesCache.get(symbol);
     const previousState = previousCache?.state || CoinState.OBSERVACION;
 
@@ -55,7 +88,9 @@ export class DetectorService {
       currentState: previousState,
       previousMetrics: previousCache?.metrics,
       config: this.currentConfig,
-      isBackfill
+      isBackfill,
+      openInterestData,
+      fundingData
     });
 
     // Actualizamos cache en memoria

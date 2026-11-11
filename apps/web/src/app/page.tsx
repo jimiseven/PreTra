@@ -3,25 +3,46 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { SmartTable } from '../components/SmartTable';
-import { MobileCardView } from '../components/MobileCardView';
+import { MultiChartView } from '../components/MultiChartView';
 import { AddCoinModal } from '../components/AddCoinModal';
+import { TopGainersModal } from '../components/TopGainersModal';
 import { useRealtimeStream } from '../hooks/useRealtimeStream';
 import { CoinState } from '@pretra/shared';
-import { Plus, Activity, AlertTriangle, Layers, Radio, Sparkles } from 'lucide-react';
+import {
+  Plus,
+  Activity,
+  AlertTriangle,
+  Layers,
+  Radio,
+  Sparkles,
+  Table,
+  LayoutGrid,
+  RefreshCw,
+  Flame
+} from 'lucide-react';
+
+type ScreenTab = 'table' | 'multichart';
 
 export default function DashboardPage() {
   const queryClient = useQueryClient();
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isGainersModalOpen, setIsGainersModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<ScreenTab>('table');
 
   // Stream en tiempo real vía SSE
   const { tickers: liveTickers, isConnected } = useRealtimeStream(() => {
-    // Cuando llega un evento de cambio de estado o watchlist, invalidamos queries
+    // Cuando llega un evento de cambio de estado o ticker, invalidamos queries
     queryClient.invalidateQueries({ queryKey: ['watchlist'] });
     queryClient.invalidateQueries({ queryKey: ['quota'] });
   });
 
-  // Query Watchlist
-  const { data: watchlist = [], isLoading } = useQuery({
+  // Query Watchlist con refetch
+  const {
+    data: watchlist = [],
+    isLoading,
+    isFetching,
+    refetch: refetchWatchlist
+  } = useQuery({
     queryKey: ['watchlist'],
     queryFn: async () => {
       const res = await fetch('/api/watchlist');
@@ -31,7 +52,7 @@ export default function DashboardPage() {
     refetchInterval: 10_000
   });
 
-  // Query Cuota de altas diarias
+  // Query Cuota de altas diarias (La Paz, UTC-4)
   const { data: quota = { count: 0, max: 5 } } = useQuery({
     queryKey: ['quota'],
     queryFn: async () => {
@@ -66,6 +87,46 @@ export default function DashboardPage() {
     }
   });
 
+  // Mutación Eliminar Individual del Historial
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/watchlist/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Error al eliminar');
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['watchlist'] });
+      queryClient.invalidateQueries({ queryKey: ['quota'] });
+    }
+  });
+
+  // Mutación Eliminar Masiva del Historial
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const res = await fetch(`/api/watchlist/bulk-delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids })
+      });
+      if (!res.ok) throw new Error('Error al eliminar');
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['watchlist'] });
+      queryClient.invalidateQueries({ queryKey: ['quota'] });
+    }
+  });
+
+  // Refrescar manualmente forzando consulta en Binance y recálculo determinista
+  const handleManualRefresh = async () => {
+    try {
+      await fetch('/api/watchlist/refresh', { method: 'POST' });
+    } catch {}
+    await refetchWatchlist();
+    queryClient.invalidateQueries({ queryKey: ['quota'] });
+    queryClient.invalidateQueries({ queryKey: ['coin-summary'] });
+  };
+
   // Conteos
   const activeCoins = watchlist.filter((i: any) => i.status === 'ACTIVE');
   const plateauCoinsCount = activeCoins.filter((i: any) => {
@@ -98,17 +159,38 @@ export default function DashboardPage() {
           </p>
         </div>
 
-        {/* Botón Añadir Moneda */}
-        <button
-          onClick={() => setIsAddModalOpen(true)}
-          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-sm bg-accent hover:bg-blue-600 text-white shadow-lg shadow-accent/25 transition-all transform active:scale-95"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Añadir Moneda</span>
-          <span className="text-[11px] bg-blue-800/80 px-2 py-0.5 rounded-full ml-1">
-            {quota.count}/{quota.max} hoy
-          </span>
-        </button>
+        {/* Acciones Superiores: Top Ganadoras, Añadir Moneda y Refresco */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsGainersModalOpen(true)}
+            title="Escanear y añadir mayores subidas de Binance Futures con 1 clic"
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl font-bold text-xs bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-lg shadow-orange-500/20 transition-all transform active:scale-95 cursor-pointer"
+          >
+            <Flame className="w-4 h-4 text-amber-100 fill-amber-200" />
+            <span>Top Ganadoras</span>
+          </button>
+
+          <button
+            onClick={handleManualRefresh}
+            disabled={isFetching}
+            title="Actualizar datos de contratos sin recargar la página"
+            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-semibold bg-surface border border-border text-slate-300 hover:text-white hover:bg-surfaceLight transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+          >
+            <RefreshCw className={`w-4 h-4 text-accent ${isFetching ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Actualizar</span>
+          </button>
+
+          <button
+            onClick={() => setIsAddModalOpen(true)}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-sm bg-accent hover:bg-blue-600 text-white shadow-lg shadow-accent/25 transition-all transform active:scale-95 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Añadir Moneda</span>
+            <span className="text-[11px] bg-blue-800/80 px-2 py-0.5 rounded-full ml-1">
+              {quota.count}/{quota.max} hoy
+            </span>
+          </button>
+        </div>
       </div>
 
       {/* Tarjetas de Resumen Global */}
@@ -162,29 +244,62 @@ export default function DashboardPage() {
 
       </div>
 
-      {/* Contenido: Tabla Desktop y Vista Mobile */}
+      {/* Selector de Pantallas / Vistas Principales */}
+      <div className="flex items-center gap-2 border-b border-border pb-1">
+        <button
+          onClick={() => setActiveTab('table')}
+          className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-all ${
+            activeTab === 'table'
+              ? 'border-accent text-accent'
+              : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
+          }`}
+        >
+          <Table className="w-4 h-4" />
+          <span>Tabla Inteligente y Paginación</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('multichart')}
+          className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 transition-all ${
+            activeTab === 'multichart'
+              ? 'border-accent text-accent'
+              : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
+          }`}
+        >
+          <LayoutGrid className="w-4 h-4" />
+          <span>Panorama Multi-Gráficos (1 a 5 en Pantalla)</span>
+          <span className="bg-accent/20 text-accent text-[10px] font-semibold px-2 py-0.5 rounded-full">
+            Nuevo
+          </span>
+        </button>
+      </div>
+
+      {/* Contenido Dinámico de la Pantalla Seleccionada */}
       {isLoading ? (
         <div className="bg-surface border border-border rounded-xl p-12 text-center text-slate-400 text-sm">
-          Cargando monedas en seguimiento...
+          Cargando contratos y métricas en vivo...
         </div>
+      ) : activeTab === 'table' ? (
+        <SmartTable
+          items={watchlist}
+          liveTickers={liveTickers}
+          onArchive={id => archiveMutation.mutate(id)}
+          onReactivate={id => reactivateMutation.mutate(id)}
+          onDelete={id => deleteMutation.mutate(id)}
+          onBulkDelete={ids => bulkDeleteMutation.mutate(ids)}
+          onRefresh={handleManualRefresh}
+          isRefreshing={isFetching}
+        />
       ) : (
-        <>
-          <SmartTable
-            items={watchlist}
-            liveTickers={liveTickers}
-            onArchive={id => archiveMutation.mutate(id)}
-            onReactivate={id => reactivateMutation.mutate(id)}
-          />
-
-          <MobileCardView
-            items={watchlist}
-            liveTickers={liveTickers}
-            onArchive={id => archiveMutation.mutate(id)}
-          />
-        </>
+        <MultiChartView
+          watchlist={watchlist}
+          liveTickers={liveTickers}
+          onRefresh={handleManualRefresh}
+          isRefreshing={isFetching}
+        />
       )}
 
-      {/* Modal de Alta */}
+      {/* Modal de Alta Manual */}
       <AddCoinModal
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
@@ -192,6 +307,19 @@ export default function DashboardPage() {
           queryClient.invalidateQueries({ queryKey: ['watchlist'] });
           queryClient.invalidateQueries({ queryKey: ['quota'] });
         }}
+        dailyCount={quota.count}
+        dailyMax={quota.max}
+      />
+
+      {/* Modal de Top Ganadoras de Binance Futures con 1 Clic */}
+      <TopGainersModal
+        isOpen={isGainersModalOpen}
+        onClose={() => setIsGainersModalOpen(false)}
+        onCoinAdded={() => {
+          queryClient.invalidateQueries({ queryKey: ['watchlist'] });
+          queryClient.invalidateQueries({ queryKey: ['quota'] });
+        }}
+        watchlistSymbols={watchlist.map((i: any) => i.symbol)}
         dailyCount={quota.count}
         dailyMax={quota.max}
       />

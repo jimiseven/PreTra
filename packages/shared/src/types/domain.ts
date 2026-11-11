@@ -104,6 +104,31 @@ export interface MetricsSnapshot {
   coverageHours: number;
   confidenceScore: number;
   explanation: string;
+  // Métricas avanzadas de meseta ajustadas a ventanas operativas
+  range30mPct?: number | null;
+  range1hPct?: number | null;
+  range2hPct?: number | null;
+  range4hPct?: number | null;
+  surge5dPct?: number | null;
+  isTightPlateau?: boolean;
+  // Divergencia de Open Interest
+  oiValueUsd?: number | null;
+  oiChange1hPct?: number | null;
+  oiChange24hPct?: number | null;
+  oiDivergence?: 'EXHAUSTION_DROP' | 'ABSORPTION_SPIKE' | 'NEUTRAL' | 'INSUFFICIENT_DATA';
+  oiDivergenceNote?: string | null;
+  // Clímax de volumen y mechas de absorción
+  hasVolumeClimax?: boolean;
+  maxUpperWickPct?: number | null;
+  climaxVolumeRatio?: number | null;
+  absorptionState?: 'HEAVY_ABSORPTION' | 'MODERATE_ABSORPTION' | 'NORMAL';
+  absorptionNote?: string | null;
+  // Funding Rate y riesgo de liquidación
+  fundingRatePct?: number | null;
+  fundingRateAnnualizedPct?: number | null;
+  fundingStatus?: 'EXTREME_LONG_CROWD' | 'HIGH_LONG' | 'NORMAL' | 'EXTREME_SHORT_CROWD';
+  nextFundingTime?: number | null;
+  liquidationRisk?: 'HIGH' | 'MEDIUM' | 'LOW';
 }
 
 export interface MarketStateRecord {

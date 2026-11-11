@@ -1,7 +1,10 @@
-import { Injectable, BadRequestException, NotFoundException, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ConflictException, Logger, OnModuleInit } from '@nestjs/common';
+import * as fs from 'fs';
+import * as path from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { BinancePublicService } from '../binance/binance-public.service';
 import { MarketDataService } from '../market-data/market-data.service';
+import { DetectorService } from '../detector/detector.service';
 import { SseService } from '../sse/sse.service';
 import {
   WatchlistStatus,
@@ -12,20 +15,58 @@ import {
 } from '@pretra/shared';
 
 @Injectable()
-export class WatchlistService {
+export class WatchlistService implements OnModuleInit {
   private readonly logger = new Logger(WatchlistService.name);
   private maxDailySymbols = parseInt(process.env.MAX_DAILY_SYMBOLS || '5', 10);
   private timezone = process.env.TIMEZONE || DEFAULT_TIMEZONE;
 
-  // Almacenamiento en memoria para modo resiliente cuando PostgreSQL no esté disponible
+  // Almacenamiento en memoria resiliente con persistencia local JSON cuando PostgreSQL no esté disponible
   private memoryWatchlist = new Map<string, any>();
+  private storagePath = path.resolve(process.cwd(), 'watchlist_store.json');
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly binanceService: BinancePublicService,
     private readonly marketDataService: MarketDataService,
+    private readonly detectorService: DetectorService,
     private readonly sseService: SseService
   ) {}
+
+  async onModuleInit() {
+    this.loadFromStorage();
+    // Iniciar backfills y streams para contratos activos recuperados
+    for (const item of this.memoryWatchlist.values()) {
+      if (item.status === WatchlistStatus.ACTIVE) {
+        this.marketDataService.runBackfill(item.symbol).catch(() => {});
+      }
+    }
+  }
+
+  private loadFromStorage() {
+    try {
+      if (fs.existsSync(this.storagePath)) {
+        const raw = fs.readFileSync(this.storagePath, 'utf8');
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          for (const item of list) {
+            this.memoryWatchlist.set(item.symbol, item);
+          }
+          this.logger.log(`Cargados ${this.memoryWatchlist.size} contratos persistidos desde ${this.storagePath}`);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`No se pudo leer watchlist_store.json: ${e?.message}`);
+    }
+  }
+
+  private saveToStorage() {
+    try {
+      const list = Array.from(this.memoryWatchlist.values());
+      fs.writeFileSync(this.storagePath, JSON.stringify(list, null, 2), 'utf8');
+    } catch (e: any) {
+      this.logger.warn(`No se pudo guardar watchlist_store.json: ${e?.message}`);
+    }
+  }
 
   /**
    * Obtiene la cuota y conteo de altas añadidas hoy en America/La_Paz
@@ -55,24 +96,68 @@ export class WatchlistService {
   }
 
   async getWatchlist(status?: string) {
+    let rawItems: any[] = [];
     if (this.prisma.isConnected) {
       try {
-        const items = await this.prisma.watchlistItem.findMany({
+        rawItems = await this.prisma.watchlistItem.findMany({
           where: status ? { status } : undefined,
           include: { marketState: true },
           orderBy: { addedAt: 'desc' }
         });
-        return items;
       } catch {
-        // Fallback a memoria
+        rawItems = Array.from(this.memoryWatchlist.values());
+        if (status) rawItems = rawItems.filter(item => item.status === status);
       }
+    } else {
+      rawItems = Array.from(this.memoryWatchlist.values());
+      if (status) rawItems = rawItems.filter(item => item.status === status);
     }
 
-    const all = Array.from(this.memoryWatchlist.values());
-    if (status) {
-      return all.filter(item => item.status === status);
+    // Unir siempre con los estados y métricas más recientes del detector
+    return rawItems.map(item => {
+      const cached = this.detectorService.getCachedState(item.symbol);
+      if (cached) {
+        return {
+          ...item,
+          marketState: {
+            currentState: cached.state,
+            metrics: cached.metrics,
+            lastEvaluatedAt: new Date()
+          }
+        };
+      }
+      return item;
+    });
+  }
+
+  /**
+   * Fuerza el refresco de precios y velas desde Binance para todas las monedas activas
+   */
+  async refreshAllActiveSymbols() {
+    this.logger.log('Refrescando contratos activos desde Binance...');
+    const active = await this.getWatchlist(WatchlistStatus.ACTIVE);
+    for (const item of active) {
+      await this.marketDataService.refreshSymbol(item.symbol);
     }
-    return all;
+    const updated = await this.getWatchlist();
+    this.sseService.broadcast('WATCHLIST_UPDATE', { action: 'REFRESHED', count: active.length });
+    return updated;
+  }
+
+  /**
+   * Elimina múltiples monedas de una vez
+   */
+  async bulkDeleteSymbols(ids: string[]) {
+    const deletedSymbols: string[] = [];
+    for (const id of ids) {
+      try {
+        const res = await this.deleteSymbol(id);
+        if (res?.symbol) deletedSymbols.push(res.symbol);
+      } catch (err) {
+        // Ignorar si ya no existía
+      }
+    }
+    return { success: true, count: deletedSymbols.length, deletedSymbols };
   }
 
   /**
@@ -151,6 +236,7 @@ export class WatchlistService {
     } else {
       this.memoryWatchlist.set(cleanSymbol, itemData);
     }
+    this.saveToStorage();
 
     // 5. Lanzar backfill asíncrono
     this.marketDataService.runBackfill(cleanSymbol).catch(err => {
@@ -188,6 +274,7 @@ export class WatchlistService {
       if (memoryItem.id === id) {
         memoryItem.status = WatchlistStatus.ARCHIVED;
         memoryItem.archivedAt = new Date();
+        this.saveToStorage();
         this.binanceService.unsubscribeSymbol(sym);
         this.sseService.broadcast('WATCHLIST_UPDATE', { action: 'ARCHIVED', item: memoryItem });
         return memoryItem;
@@ -220,6 +307,7 @@ export class WatchlistService {
       if (memoryItem.id === id) {
         memoryItem.status = WatchlistStatus.ACTIVE;
         memoryItem.archivedAt = null;
+        this.saveToStorage();
         this.binanceService.subscribeSymbol(sym);
         this.sseService.broadcast('WATCHLIST_UPDATE', { action: 'REACTIVATED', item: memoryItem });
         return memoryItem;
@@ -246,6 +334,7 @@ export class WatchlistService {
       if (memoryItem.id === id) {
         this.binanceService.unsubscribeSymbol(sym);
         this.memoryWatchlist.delete(sym);
+        this.saveToStorage();
         this.sseService.broadcast('WATCHLIST_UPDATE', { action: 'DELETED', id, symbol: sym });
         return { success: true, symbol: sym };
       }

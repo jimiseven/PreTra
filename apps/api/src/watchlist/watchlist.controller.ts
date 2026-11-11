@@ -49,6 +49,27 @@ export class WatchlistController {
     return this.watchlistService.reactivateSymbol(id);
   }
 
+  @Post('refresh')
+  @ApiOperation({ summary: 'Fuerza el refresco de precios y velas desde Binance para todas las monedas activas' })
+  async refreshAll() {
+    return this.watchlistService.refreshAllActiveSymbols();
+  }
+
+  @Post('bulk-delete')
+  @ApiOperation({ summary: 'Elimina permanentemente una o varias monedas del historial' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['ids']
+    }
+  })
+  async bulkDelete(@Body() body: { ids: string[] }) {
+    return this.watchlistService.bulkDeleteSymbols(body.ids || []);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Elimina permanentemente una moneda y sus datos' })
   async deleteSymbol(@Param('id') id: string) {

@@ -17,6 +17,15 @@ export interface DetectorInput {
   previousMetrics?: MetricsSnapshot | null;
   config?: Partial<DetectionConfig>;
   isBackfill?: boolean;
+  openInterestData?: {
+    currentOiValueUsd?: number | null;
+    oiChange1hPct?: number | null;
+    oiChange24hPct?: number | null;
+  } | null;
+  fundingData?: {
+    fundingRatePct?: number | null;
+    nextFundingTime?: number | null;
+  } | null;
 }
 
 export interface DetectorOutput {
@@ -185,6 +194,124 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
 
   const recentRangePct = roundTo(calculateRangePct(rangeHigh, rangeLow), 2);
 
+  // 7.1 Rangos específicos para ventanas operativas: 30m, 1h, 2h, 4h
+  function computeWindowRange(mins: number): number | null {
+    const start = currentTime - mins * 60_000;
+    const wCandles = windowCandles.filter(c => c.openTime >= start);
+    if (wCandles.length < 2) return null;
+    let max = -Infinity;
+    let min = Infinity;
+    for (const c of wCandles) {
+      const highVal = config.useClosesForPeaks ? c.close : c.high;
+      const lowVal = config.useClosesForPeaks ? c.close : c.low;
+      if (highVal > max) max = highVal;
+      if (lowVal < min) min = lowVal;
+    }
+    if (max <= 0 || min <= 0 || max === -Infinity) return null;
+    return roundTo(calculateRangePct(max, min), 2);
+  }
+
+  const range30mPct = computeWindowRange(30);
+  const range1hPct = computeWindowRange(60);
+  const range2hPct = computeWindowRange(120);
+  const range4hPct = computeWindowRange(240);
+
+  // Subida acumulada de los últimos 5 días (120h)
+  const fiveDaysAgoMs = currentTime - 5 * 24 * 3600_000;
+  let refCandle5d: Candle | null = null;
+  for (let i = 0; i < candles.length; i++) {
+    if (candles[i].openTime >= fiveDaysAgoMs) {
+      refCandle5d = candles[i];
+      break;
+    }
+  }
+  const surge5dPct = refCandle5d ? roundTo(calculateReturnPct(currentPrice, refCandle5d.open), 2) : impulseTotalPct;
+
+  // Detección de meseta estrecha (subidas y bajas no mayores a 2% en las últimas 2h o 30m)
+  const tightThreshold = config.tightPlateauThresholdPct || 2.0;
+  const isTightIn2h = range2hPct !== null && range2hPct <= tightThreshold;
+  const isTightIn30m = range30mPct !== null && range30mPct <= tightThreshold && hoursWithoutNewHigh >= 0.5;
+  const isTightPlateau = isTightIn2h || isTightIn30m;
+
+  // 7.2 Detección de Clímax de Volumen y Absorción (Mechas Superiores)
+  const recentCandlesForWicks = windowCandles.slice(-Math.min(60, windowCandles.length));
+  let sumVol = 0;
+  for (const c of recentCandlesForWicks) sumVol += c.volume;
+  const avgVol = recentCandlesForWicks.length > 0 ? (sumVol / recentCandlesForWicks.length) : 1;
+
+  let maxUpperWickPct = 0;
+  let maxClimaxVolRatio = 1.0;
+  let hasVolumeClimax = false;
+
+  for (const c of recentCandlesForWicks) {
+    const range = c.high - c.low;
+    if (range > 0) {
+      const upperWick = c.high - Math.max(c.open, c.close);
+      const wickPct = (upperWick / range) * 100;
+      const volRatio = avgVol > 0 ? (c.volume / avgVol) : 1;
+      if (wickPct > maxUpperWickPct) maxUpperWickPct = wickPct;
+      if (volRatio > maxClimaxVolRatio) maxClimaxVolRatio = volRatio;
+
+      if (volRatio >= 2.0 && wickPct >= 38.0) {
+        hasVolumeClimax = true;
+      }
+    }
+  }
+
+  maxUpperWickPct = roundTo(maxUpperWickPct, 1);
+  maxClimaxVolRatio = roundTo(maxClimaxVolRatio, 1);
+
+  let absorptionState: 'HEAVY_ABSORPTION' | 'MODERATE_ABSORPTION' | 'NORMAL' = 'NORMAL';
+  let absorptionNote: string | null = null;
+  if (hasVolumeClimax || (maxUpperWickPct >= 45 && maxClimaxVolRatio >= 2.0)) {
+    absorptionState = maxUpperWickPct >= 55 ? 'HEAVY_ABSORPTION' : 'MODERATE_ABSORPTION';
+    absorptionNote = `Absorción detectada: Mecha superior de ${maxUpperWickPct}% con volumen ${maxClimaxVolRatio}x vs media (rechazo institucional).`;
+  }
+
+  // 7.3 Divergencia de Open Interest
+  let oiDivergence: 'EXHAUSTION_DROP' | 'ABSORPTION_SPIKE' | 'NEUTRAL' | 'INSUFFICIENT_DATA' = 'INSUFFICIENT_DATA';
+  let oiDivergenceNote: string | null = null;
+  const oi1h = input.openInterestData?.oiChange1hPct ?? null;
+  const oiVal = input.openInterestData?.currentOiValueUsd ?? null;
+  const oi24h = input.openInterestData?.oiChange24hPct ?? null;
+
+  if (typeof oi1h === 'number') {
+    if (isTightPlateau && oi1h <= -2.5) {
+      oiDivergence = 'EXHAUSTION_DROP';
+      oiDivergenceNote = `Agotamiento de OI: El Interés Abierto cayó ${oi1h.toFixed(1)}% en 1h con precio en meseta (cierre de largos).`;
+    } else if (isTightPlateau && oi1h >= 3.5) {
+      oiDivergence = 'ABSORPTION_SPIKE';
+      oiDivergenceNote = `Absorción de OI: El Interés Abierto aumentó +${oi1h.toFixed(1)}% en 1h sin superar el techo (presión de cortos).`;
+    } else {
+      oiDivergence = 'NEUTRAL';
+      oiDivergenceNote = `OI equilibrado (${oi1h >= 0 ? '+' : ''}${oi1h.toFixed(1)}% en 1h).`;
+    }
+  }
+
+  // 7.4 Monitoreo de Funding Rate y riesgo de liquidaciones
+  const fundingRatePct = input.fundingData?.fundingRatePct ?? null;
+  const nextFundingTime = input.fundingData?.nextFundingTime ?? null;
+  let fundingRateAnnualizedPct: number | null = null;
+  let fundingStatus: 'EXTREME_LONG_CROWD' | 'HIGH_LONG' | 'NORMAL' | 'EXTREME_SHORT_CROWD' = 'NORMAL';
+  let liquidationRisk: 'HIGH' | 'MEDIUM' | 'LOW' = 'LOW';
+
+  if (typeof fundingRatePct === 'number') {
+    fundingRateAnnualizedPct = roundTo(fundingRatePct * 3 * 365, 2);
+    if (fundingRatePct >= 0.08) {
+      fundingStatus = 'EXTREME_LONG_CROWD';
+      liquidationRisk = 'HIGH';
+    } else if (fundingRatePct >= 0.03) {
+      fundingStatus = 'HIGH_LONG';
+      liquidationRisk = isTightPlateau ? 'HIGH' : 'MEDIUM';
+    } else if (fundingRatePct <= -0.04) {
+      fundingStatus = 'EXTREME_SHORT_CROWD';
+      liquidationRisk = 'MEDIUM';
+    } else {
+      fundingStatus = 'NORMAL';
+      liquidationRisk = 'LOW';
+    }
+  }
+
   // 8. Evaluación de condiciones de Estado
   const hasSignificantImpulse = impulseTotalPct >= config.minImpulsePct;
   const isNearPeak = Math.abs(distanceToPeakPct) <= config.plateauMaxDistanceToPeakPct;
@@ -216,11 +343,22 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
       rangeLow,
       peakPrice
     };
-  } else if (!hasSignificantImpulse) {
+  } else if (!hasSignificantImpulse && !(surge5dPct !== null && surge5dPct >= 25.0 && isTightPlateau)) {
     newState = CoinState.OBSERVACION;
   } else {
-    // Hay un impulso significativo previo (ej. >= 70%)
-    if (hoursWithoutNewHigh < config.earlyPlateauMinHours && !hasVelocityDropped) {
+    // Hay un impulso significativo previo (ej. >= 70% o subida 5d sostenida >= 25%)
+    // Si cumple la regla de meseta estrecha (rango <= 2% en 2h o 30m sin nuevo máximo cerca del pico)
+    if (isTightPlateau && Math.abs(distanceToPeakPct) <= config.plateauMaxDistanceToPeakPct * 1.5 && hoursWithoutNewHigh >= 0.5) {
+      newState = CoinState.MESETA_TEMPRANA;
+      confidenceScore = Math.min(95, 80 + Math.floor(hoursWithoutNewHigh * 3));
+      plateauAction = {
+        action: previousState === CoinState.MESETA_TEMPRANA ? 'NONE' : 'START',
+        status: PlateauStatus.IN_PROGRESS,
+        rangeHigh,
+        rangeLow,
+        peakPrice
+      };
+    } else if (hoursWithoutNewHigh < config.earlyPlateauMinHours && !hasVelocityDropped) {
       newState = CoinState.IMPULSO_ALCISTA;
       confidenceScore = 80;
     } else if (hasSignificantImpulse && hasTimeWithoutHigh && isNearPeak && isRangeTight) {
@@ -257,13 +395,33 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
 
   // 9. Redacción de explicación puramente fáctica
   const speedDisplay = roundTo(recentSpeedPerMin * 60, 2);
-  const explanationParts = [
-    `Impulso estimado +${impulseTotalPct}% en ${impulseDurationHours}h.`,
-    `Lleva ${hoursWithoutNewHigh}h sin nuevo máximo (máx: ${formatPrice(peakPrice)}).`,
-    `A ${distanceToPeakPct}% del máximo.`,
-    `Últimos 60m: ${change1h >= 0 ? '+' : ''}${change1h}%.`,
-    `Rango consolidación reciente: ${recentRangePct}%.`
-  ];
+  const explanationParts = [];
+
+  if (newState === CoinState.MESETA_TEMPRANA && isTightPlateau) {
+    const activeTightWin = isTightIn2h ? '2h' : '30m';
+    const activeTightVal = isTightIn2h ? range2hPct : range30mPct;
+    explanationParts.push(
+      `Meseta confirmada: En las últimas ${activeTightWin} el precio osciló apenas ${activeTightVal}% (<= ${tightThreshold}% umbral).`,
+      `Sin nuevo máximo en ${hoursWithoutNewHigh}h tras subida previa (+${impulseTotalPct}%).`,
+      `A ${distanceToPeakPct}% del máximo.`
+    );
+  } else {
+    explanationParts.push(
+      `Impulso estimado +${impulseTotalPct}% en ${impulseDurationHours}h.`,
+      `Lleva ${hoursWithoutNewHigh}h sin nuevo máximo (máx: ${formatPrice(peakPrice)}).`,
+      `A ${distanceToPeakPct}% del máximo.`,
+      `Últimos 60m: ${change1h >= 0 ? '+' : ''}${change1h}%.`,
+      `Rango consolidación reciente: ${recentRangePct}%.`
+    );
+  }
+
+  if (absorptionNote) {
+    explanationParts.push(absorptionNote);
+  }
+  if (oiDivergenceNote) {
+    explanationParts.push(oiDivergenceNote);
+  }
+
   const explanation = explanationParts.join(' ');
 
   const metrics: MetricsSnapshot = {
@@ -288,7 +446,28 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
       : null,
     coverageHours: roundTo(candles.length / 60, 1),
     confidenceScore,
-    explanation
+    explanation,
+    range30mPct,
+    range1hPct,
+    range2hPct,
+    range4hPct,
+    surge5dPct,
+    isTightPlateau,
+    oiValueUsd: oiVal,
+    oiChange1hPct: oi1h,
+    oiChange24hPct: oi24h,
+    oiDivergence,
+    oiDivergenceNote,
+    hasVolumeClimax,
+    maxUpperWickPct,
+    climaxVolumeRatio: maxClimaxVolRatio,
+    absorptionState,
+    absorptionNote,
+    fundingRatePct,
+    fundingRateAnnualizedPct,
+    fundingStatus,
+    nextFundingTime,
+    liquidationRisk
   };
 
   const stateChanged = previousState !== newState;

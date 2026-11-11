@@ -33,3 +33,7 @@ Thumbs.db
 # Prisma
 dev.db
 dev.db-journal
+
+# Local runtime storage
+watchlist_store.json
+
