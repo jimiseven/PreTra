@@ -149,3 +149,43 @@ export function generatePlateauAndBreakdownScenario(
   const breakdownCandles = generateCandleSeries(120, lastPlateauCandle.close, -15.0, breakdownStart, 0.3, symbol);
   return [...candles, ...breakdownCandles];
 }
+
+/**
+ * Genera escenario de MESETA AMPLIA / CANAL DE CONSOLIDACIÓN (Caso Usuario: 0.70 a 0.78 durante 12-14h tras rally de 48h)
+ */
+export function generateWidePlateauScenario(
+  symbol: string = 'WIDE_PLATEAU_USDT',
+  startTime: number = 1700000000000
+): { candles: Candle[]; peakPrice: number; floorPrice: number; plateauHours: number } {
+  // 1. Rally previo de 48 horas (2880 minutos) subiendo de 0.40 a 0.78 (+95%)
+  const impulseMinutes = 2880;
+  const impulseCandles = generateCandleSeries(impulseMinutes, 0.40, 95.0, startTime, 0.15, symbol);
+  const peakPrice = 0.78;
+  const floorPrice = 0.70;
+
+  const plateauStartTime = startTime + impulseMinutes * 60_000;
+  // 2. Consolidación de 14 horas (840 minutos) oscilando entre 0.70 y 0.78
+  const plateauMinutes = 840;
+  const plateauCandles: Candle[] = [];
+
+  for (let i = 0; i < plateauMinutes; i++) {
+    const openTime = plateauStartTime + i * 60_000;
+    // Oscilación senoide suave entre floorPrice (0.70) y peakPrice * 0.99 (0.772), con picos hasta 0.78
+    const mid = (peakPrice + floorPrice) / 2; // 0.74
+    const amplitude = (peakPrice - floorPrice) / 2; // 0.04
+    const wave = Math.sin(i / 30);
+    const close = mid + amplitude * wave * 0.95;
+    const open = mid + amplitude * Math.sin((i - 1) / 30) * 0.95;
+    const high = Math.min(peakPrice, Math.max(open, close) + 0.003);
+    const low = Math.max(floorPrice, Math.min(open, close) - 0.003);
+
+    plateauCandles.push(createBaseCandle(symbol, openTime, open, high, low, close, 1200));
+  }
+
+  return {
+    candles: [...impulseCandles, ...plateauCandles],
+    peakPrice,
+    floorPrice,
+    plateauHours: 14.0
+  };
+}

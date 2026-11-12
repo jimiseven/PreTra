@@ -83,12 +83,21 @@ export function SmartTable({
     const recentRangePct = metrics.recentRangePct ?? 0;
     const explanation = live?.explanation || metrics.explanation || '';
 
-    // Métricas específicas de meseta <= 2%
+    // Métricas específicas de meseta <= 2% y canales amplios
     const range30mPct = metrics.range30mPct ?? null;
     const range1hPct = metrics.range1hPct ?? null;
     const range2hPct = metrics.range2hPct ?? null;
     const range4hPct = metrics.range4hPct ?? null;
+    const range6hPct = metrics.range6hPct ?? null;
+    const range12hPct = metrics.range12hPct ?? null;
+    const range24hPct = metrics.range24hPct ?? null;
     const isTightPlateau = metrics.isTightPlateau ?? (range2hPct !== null && range2hPct <= 2.0);
+    const isWidePlateau = metrics.isWidePlateau ?? false;
+    const plateauType = metrics.plateauType ?? (isTightPlateau ? 'TIGHT' : (isWidePlateau ? 'WIDE' : 'NONE'));
+    const channelFloor = metrics.channelFloor ?? null;
+    const channelCeiling = metrics.channelCeiling ?? null;
+    const channelOscillationPct = metrics.channelOscillationPct ?? null;
+    const hoursInChannel = metrics.hoursInChannel ?? null;
     const surge5dPct = metrics.surge5dPct ?? null;
 
     // Métricas de flujo y microestructura (OI, Absorción, Funding)
@@ -129,7 +138,16 @@ export function SmartTable({
       range1hPct,
       range2hPct,
       range4hPct,
+      range6hPct,
+      range12hPct,
+      range24hPct,
       isTightPlateau,
+      isWidePlateau,
+      plateauType,
+      channelFloor,
+      channelCeiling,
+      channelOscillationPct,
+      hoursInChannel,
       surge5dPct,
       oiValueUsd,
       oiChange1hPct,
@@ -553,12 +571,24 @@ export function SmartTable({
                       <StateBadge state={item.state} />
                     </td>
 
-                    {/* Métrica de Rango de Meseta (<= 2% en 2h / 30m) */}
+                    {/* Métrica de Rango de Meseta (<= 2% estrecha o canal amplio 3%-16%) */}
                     <td className="py-3.5 px-4 font-mono">
                       {item.isTightPlateau ? (
                         <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-950/70 border border-purple-800 text-purple-300 text-xs font-bold">
                           <Sparkles className="w-3 h-3 text-purple-400" />
                           <span>Meseta &le;2% ({item.range2hPct ? `${item.range2hPct}%` : `${item.range30mPct}%`})</span>
+                        </div>
+                      ) : item.isWidePlateau ? (
+                        <div className="inline-flex flex-col gap-0.5 px-2 py-1 rounded-md bg-amber-950/70 border border-amber-800 text-amber-300 text-xs font-bold">
+                          <div className="flex items-center gap-1">
+                            <Sparkles className="w-3 h-3 text-amber-400" />
+                            <span>Canal {item.channelOscillationPct}% ({item.hoursInChannel ? `${item.hoursInChannel.toFixed(0)}h` : ''})</span>
+                          </div>
+                          {item.channelFloor && item.channelCeiling && (
+                            <span className="text-[10px] text-amber-200/80 font-normal">
+                              [${item.channelFloor.toFixed(3)} - ${item.channelCeiling.toFixed(3)}]
+                            </span>
+                          )}
                         </div>
                       ) : item.range2hPct !== null ? (
                         <span className="text-slate-300 text-xs">
@@ -706,11 +736,15 @@ export function SmartTable({
 
                   <div className="text-right flex flex-col items-end gap-1">
                     <StateBadge state={item.state} size="sm" />
-                    {item.isTightPlateau && (
+                    {item.isTightPlateau ? (
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800">
                         Meseta &le; 2%
                       </span>
-                    )}
+                    ) : item.isWidePlateau ? (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800">
+                        Canal {item.channelOscillationPct}%
+                      </span>
+                    ) : null}
                   </div>
                 </div>
 

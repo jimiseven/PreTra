@@ -227,6 +227,42 @@ VERSIÓN: 1.5.0 - AUTO-ACTUALIZACIÓN 1S, PRECIO HERO, MULTI-GRÁFICOS MONO-MONE
    - Se incorporaron los botones de temporalidad `12h` y `1D (Día)` en todos los
      selectores de gráficos de la aplicación.
 
+--------------------------------------------------------------------------------
+FECHA: 2026-11-12
+VERSIÓN: 1.6.0 - MESETAS AMPLIAS Y CANALES DE CONSOLIDACIÓN (3% A 16%)
+--------------------------------------------------------------------------------
+[ESTADO: APROBADO Y OPERATIVO]
+
+1. Detección de Mesetas Amplias / Canales de Distribución Sostenidos (Caso 0.70 a 0.78):
+   - En altcoins volátiles tras rallies de 48-72h, el precio frecuentemente no se congela
+     al 2%, sino que entra en un canal de oscilación de 3% a 16% (ej. fluctuaciones entre
+     0.70 y 0.78, que representan ~11.4% de rango) sostenido por más de 6 a 12 horas.
+   - Se amplió la formulación del motor matemático determinista para diferenciar dos tipos
+     de mesetas:
+     * `MESETA_ESTRECHA`: Compresión extrema <= 2.0% en 30m o 2h (inminencia de quiebre).
+     * `MESETA_AMPLIA / CANAL`: Oscilación sostenida entre 3.0% y 16.0% mantenida durante
+       al menos 6 horas (hasta 12h, 24h o más) tras rally previo (>= 20-25% en 48-72h o 5d),
+       donde el piso local (soporte de canal, ej. 0.70) se mantiene intacto sin quiebre bajista.
+
+2. Métricas y Parámetros de Canal en `MetricsSnapshot` y `DetectionConfig`:
+   - Nuevas métricas en dominio: `isWidePlateau`, `plateauType` ('TIGHT' | 'WIDE' | 'NONE'),
+     `channelFloor` (precio soporte), `channelCeiling` (precio techo), `channelOscillationPct`,
+     `hoursInChannel`, `range6hPct`, `range12hPct`, `range24hPct`.
+   - Nuevos parámetros configurables: `widePlateauMinOscillationPct` (3.0%),
+     `widePlateauMaxOscillationPct` (16.0%), `widePlateauMinHours` (6.0h),
+     `widePlateauMaxDistanceToPeakPct` (18.0%).
+
+3. Prevención de Falsas Rupturas Bajistas en Canales Amplios:
+   - Cuando un activo se encuentra en `MESETA_AMPLIA`, la ruptura bajista se evalúa contra
+     el piso del canal (`channelFloor * (1 - breakdownPullbackPct / 100)`), evitando que
+     el movimiento oscilatorio normal entre 0.78 y 0.70 dispare falsamente un breakdown.
+
+4. Interfaz Web Adaptativa (Desktop & Mobile):
+   - `SmartTable`: Badge distintivo en ámbar para activos en canal amplio:
+     `Canal 11.4% (14h) [$0.700 - $0.780]`.
+   - `/coins/[symbol]`: Hero Banner y tarjeta diagnóstica de canal que muestra soporte,
+     resistencia, amplitud de oscilación y horas de permanencia en el canal.
+
 ================================================================================
-FIN DEL HISTORIAL - ÚLTIMA ACTUALIZACIÓN: 2026-11-11
+FIN DEL HISTORIAL - ÚLTIMA ACTUALIZACIÓN: 2026-11-12
 ================================================================================

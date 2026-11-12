@@ -109,8 +109,18 @@ export interface MetricsSnapshot {
   range1hPct?: number | null;
   range2hPct?: number | null;
   range4hPct?: number | null;
+  range6hPct?: number | null;
+  range12hPct?: number | null;
+  range24hPct?: number | null;
   surge5dPct?: number | null;
   isTightPlateau?: boolean;
+  // Meseta Amplia / Canal de Consolidación (ej. 0.70 a 0.78, oscilación 3% - 14% por >= 6-12h)
+  isWidePlateau?: boolean;
+  plateauType?: 'TIGHT' | 'WIDE' | 'NONE';
+  channelFloor?: number | null;
+  channelCeiling?: number | null;
+  channelOscillationPct?: number | null;
+  hoursInChannel?: number | null;
   // Divergencia de Open Interest
   oiValueUsd?: number | null;
   oiChange1hPct?: number | null;

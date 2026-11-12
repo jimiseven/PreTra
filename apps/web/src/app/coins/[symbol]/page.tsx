@@ -303,20 +303,36 @@ export default function CoinDetailPage() {
           </p>
         </div>
 
-        {/* Resumen Rápido de Estado y Rango 2h */}
+        {/* Resumen Rápido de Estado y Rango / Canal de Meseta */}
         <div className="flex items-center gap-3 self-start lg:self-center bg-background/60 p-3.5 rounded-xl border border-border/60">
           <div className="text-right">
             <span className="text-[10px] text-slate-400 block uppercase font-medium">Condición de Meseta</span>
-            <span className={`text-base font-bold font-mono block ${metrics.isTightPlateau ? 'text-purple-300' : 'text-slate-300'}`}>
-              {typeof metrics.range2hPct === 'number' ? `${metrics.range2hPct.toFixed(2)}% (2h)` : '--'}
+            <span className={`text-base font-bold font-mono block ${
+              metrics.isTightPlateau
+                ? 'text-purple-300'
+                : metrics.isWidePlateau
+                ? 'text-amber-300'
+                : 'text-slate-300'
+            }`}>
+              {metrics.isWidePlateau && typeof metrics.channelOscillationPct === 'number'
+                ? `Canal ${metrics.channelOscillationPct.toFixed(1)}%`
+                : typeof metrics.range2hPct === 'number'
+                ? `${metrics.range2hPct.toFixed(2)}% (2h)`
+                : '--'}
             </span>
             <span className="text-[10px] text-slate-400 block">
-              {metrics.isTightPlateau ? '✓ Rango Estrecho ≤ 2.0%' : 'Oscilación Amplia'}
+              {metrics.isTightPlateau
+                ? '✓ Meseta Estrecha ≤ 2.0%'
+                : metrics.isWidePlateau && metrics.channelFloor && metrics.channelCeiling
+                ? `Soporte: $${metrics.channelFloor.toFixed(3)} · Res: $${metrics.channelCeiling.toFixed(3)}`
+                : 'Oscilación Estándar'}
             </span>
           </div>
           <div className={`w-11 h-11 rounded-xl flex items-center justify-center border ${
             metrics.isTightPlateau
               ? 'bg-purple-950/80 text-purple-300 border-purple-700 shadow-lg shadow-purple-950/50'
+              : metrics.isWidePlateau
+              ? 'bg-amber-950/80 text-amber-300 border-amber-700 shadow-lg shadow-amber-950/50'
               : 'bg-slate-800 text-slate-400 border-slate-700'
           }`}>
             <Sparkles className="w-5 h-5" />
@@ -569,41 +585,77 @@ export default function CoinDetailPage() {
         </div>
       </div>
 
-      {/* DETECTOR DE MESETA: CRITERIO DE RANGO ESTRECHO <= 2% TRAS SUBIDA SOSTENIDA */}
+      {/* DETECTOR DE MESETA: CRITERIO DE RANGO ESTRECHO <= 2% O CANAL AMPLIO 3%-16% */}
       <div className={`border rounded-xl p-5 space-y-4 shadow-sm ${
         metrics.isTightPlateau
           ? 'bg-purple-950/20 border-purple-800/80'
+          : metrics.isWidePlateau
+          ? 'bg-amber-950/20 border-amber-800/80'
           : 'bg-surface border-border'
       }`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border/60 pb-3">
           <div className="flex items-center gap-2">
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-              metrics.isTightPlateau ? 'bg-purple-900/60 text-purple-300' : 'bg-surfaceLight text-slate-400'
+              metrics.isTightPlateau
+                ? 'bg-purple-900/60 text-purple-300'
+                : metrics.isWidePlateau
+                ? 'bg-amber-900/60 text-amber-300'
+                : 'bg-surfaceLight text-slate-400'
             }`}>
               <Sparkles className="w-4 h-4" />
             </div>
             <div>
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <span>Verificación de Meseta Estrecha (Criterio &le; 2% de Rango)</span>
-                {metrics.isTightPlateau && (
+                <span>Detección de Mesetas y Canales de Consolidación</span>
+                {metrics.isTightPlateau ? (
                   <span className="text-[10px] bg-purple-900/80 border border-purple-700 text-purple-200 px-2 py-0.5 rounded-full font-bold">
-                    Condición Cumplida
+                    Meseta Estrecha (&le; 2.0%)
                   </span>
-                )}
+                ) : metrics.isWidePlateau ? (
+                  <span className="text-[10px] bg-amber-900/80 border border-amber-700 text-amber-200 px-2 py-0.5 rounded-full font-bold">
+                    Meseta Amplia / Canal ({metrics.channelOscillationPct}%)
+                  </span>
+                ) : null}
               </h3>
               <p className="text-xs text-slate-400">
-                Identifica si tras la subida de los últimos 5 días la moneda no tiene subidas ni bajas mayores al 2% en 2h o 30m
+                Evalúa tanto micro-compresiones (&le; 2%) como canales de consolidación amplios (3% a 16%) que sostienen un piso sin caer tras el rally
               </p>
             </div>
           </div>
 
           <div className="text-right text-xs">
-            <span className="text-slate-400">Subida previa 5 días (120h): </span>
+            <span className="text-slate-400">Subida previa (rally): </span>
             <span className="font-mono font-bold text-emerald-400 text-sm">
               +{typeof metrics.surge5dPct === 'number' ? metrics.surge5dPct.toFixed(1) : (typeof metrics.impulseTotalPct === 'number' ? metrics.impulseTotalPct.toFixed(1) : '0')}%
             </span>
           </div>
         </div>
+
+        {/* Banner de Canal Amplio si está activo */}
+        {metrics.isWidePlateau && metrics.channelFloor && metrics.channelCeiling && (
+          <div className="p-3.5 rounded-xl bg-amber-950/40 border border-amber-700/60 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
+            <div>
+              <span className="text-[10px] text-amber-400/80 block uppercase font-bold">Piso / Soporte</span>
+              <span className="text-base font-bold text-emerald-400 block">${metrics.channelFloor.toFixed(4)}</span>
+              <span className="text-[10px] text-slate-400">Base respetada</span>
+            </div>
+            <div>
+              <span className="text-[10px] text-amber-400/80 block uppercase font-bold">Techo / Resistencia</span>
+              <span className="text-base font-bold text-rose-400 block">${metrics.channelCeiling.toFixed(4)}</span>
+              <span className="text-[10px] text-slate-400">Máx de canal</span>
+            </div>
+            <div>
+              <span className="text-[10px] text-amber-400/80 block uppercase font-bold">Amplitud de Canal</span>
+              <span className="text-base font-bold text-amber-300 block">{metrics.channelOscillationPct}%</span>
+              <span className="text-[10px] text-slate-400">Oscilación sostenida</span>
+            </div>
+            <div>
+              <span className="text-[10px] text-amber-400/80 block uppercase font-bold">Tiempo en Canal</span>
+              <span className="text-base font-bold text-slate-200 block">{metrics.hoursInChannel ? `${metrics.hoursInChannel.toFixed(1)}h` : '--'}</span>
+              <span className="text-[10px] text-emerald-400">Sin nuevo máximo</span>
+            </div>
+          </div>
+        )}
 
         {/* 4 Ventanas de Rango: 30m, 1h, 2h, 4h */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -666,11 +718,15 @@ export default function CoinDetailPage() {
           <p className="leading-relaxed">
             {metrics.isTightPlateau ? (
               <span>
-                <strong>Lectura Técnica:</strong> El activo cumple la regla de estancamiento. En las últimas 2 horas (o 30 minutos), la diferencia entre el máximo y mínimo es de apenas <strong>{typeof metrics.range2hPct === 'number' ? `${metrics.range2hPct}%` : (typeof metrics.range30mPct === 'number' ? `${metrics.range30mPct}%` : '--')}</strong> (&le; 2.0%), manteniéndose sin nuevos máximos desde hace <strong>{Number(hoursWithoutHigh || 0).toFixed(1)} horas</strong> tras el impulso acumulado de 5 días.
+                <strong>Lectura Técnica (Meseta Estrecha):</strong> El activo cumple la regla de estancamiento. En las últimas 2 horas (o 30 minutos), la diferencia entre el máximo y mínimo es de apenas <strong>{typeof metrics.range2hPct === 'number' ? `${metrics.range2hPct}%` : (typeof metrics.range30mPct === 'number' ? `${metrics.range30mPct}%` : '--')}</strong> (&le; 2.0%), manteniéndose sin nuevos máximos desde hace <strong>{Number(hoursWithoutHigh || 0).toFixed(1)} horas</strong> tras el impulso acumulado.
+              </span>
+            ) : metrics.isWidePlateau ? (
+              <span>
+                <strong>Lectura Técnica (Meseta Amplia / Canal):</strong> Tras el rally previo, el activo ha formado una zona de consolidación sostenida oscilando entre <strong>${metrics.channelFloor?.toFixed(4)}</strong> y <strong>${metrics.channelCeiling?.toFixed(4)}</strong> (amplitud de <strong>{metrics.channelOscillationPct}%</strong>). Lleva <strong>{metrics.hoursInChannel?.toFixed(1)} horas</strong> respetando este piso sin quiebre bajista.
               </span>
             ) : (
               <span>
-                <strong>Lectura Técnica:</strong> La oscilación en las últimas 2 horas es de <strong>{typeof metrics.range2hPct === 'number' ? `${metrics.range2hPct}%` : '--'}</strong>. Aún no se consolida un rango &le; 2.0% continuo o el precio sigue teniendo fluctuaciones más amplias.
+                <strong>Lectura Técnica:</strong> La oscilación en las últimas 2 horas es de <strong>{typeof metrics.range2hPct === 'number' ? `${metrics.range2hPct}%` : '--'}</strong>. Aún no se consolida un rango &le; 2.0% ni un canal sostenido sin quiebre.
               </span>
             )}
           </p>

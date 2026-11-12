@@ -5,6 +5,7 @@ import {
   generateImpulseAndPlateauScenario,
   generatePauseAndNewImpulseScenario,
   generatePlateauAndBreakdownScenario,
+  generateWidePlateauScenario,
   createBaseCandle
 } from './synthetic.js';
 import { CoinState, PlateauStatus } from '../types/domain.js';
@@ -192,5 +193,26 @@ describe('Detector de Mesetas Tempranas - Pruebas Sintéticas Exhaustivas (Casos
     expect(calculateReturnPct(20, 10)).toBe(100);
     // Si cae de 20 a 10: ((10/20) - 1) * 100 = -50%
     expect(calculateReturnPct(10, 20)).toBe(-50);
+  });
+
+  // CASO K: Meseta Amplia / Canal de Consolidación (ej. 0.70 a 0.78 durante 14h tras rally 48h)
+  it('CASO K: Detecta MESETA_TEMPRANA tipo WIDE cuando el precio oscila entre 0.70 y 0.78 durante 14h sin caer', () => {
+    const { candles, peakPrice, floorPrice } = generateWidePlateauScenario('K_USDT');
+    const result = evaluatePlateauDetector({
+      symbol: 'K_USDT',
+      candles,
+      currentState: CoinState.OBSERVACION
+    });
+
+    expect(result.state).toBe(CoinState.MESETA_TEMPRANA);
+    expect(result.metrics.isWidePlateau).toBe(true);
+    expect(result.metrics.plateauType).toBe('WIDE');
+    expect(result.metrics.channelFloor).toBeCloseTo(0.70, 1);
+    expect(result.metrics.channelCeiling).toBeCloseTo(0.78, 1);
+    expect(result.metrics.channelOscillationPct).toBeGreaterThanOrEqual(8.0);
+    expect(result.metrics.channelOscillationPct).toBeLessThanOrEqual(16.0);
+    expect(result.metrics.hoursWithoutNewHigh).toBeGreaterThanOrEqual(12.0);
+    expect(result.plateauAction?.action).toBe('START');
+    expect(result.metrics.explanation).toContain('Meseta Amplia (Canal de Consolidación)');
   });
 });

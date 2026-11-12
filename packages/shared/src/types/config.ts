@@ -14,7 +14,12 @@ export const DetectionConfigSchema = z.object({
   cooldownMinutes: z.number().min(0).max(1440).default(60), // Cooldown entre alertas repetidas del mismo estado
   useClosesForPeaks: z.boolean().default(false), // Si true usa close; si false usa high
   tightPlateauThresholdPct: z.number().min(0.1).max(10).default(2.0), // Subidas y bajas <= 2% para meseta
-  tightPlateauWindowMinutes: z.number().min(15).max(720).default(120) // Rango de temporalidad (30m, 1h, 2h)
+  tightPlateauWindowMinutes: z.number().min(15).max(720).default(120), // Rango de temporalidad (30m, 1h, 2h)
+  // Configuración de Meseta Amplia / Canal de Consolidación (ej. 0.70 a 0.78, rango 3% - 16%)
+  widePlateauMinOscillationPct: z.number().min(1.0).max(10.0).default(3.0),
+  widePlateauMaxOscillationPct: z.number().min(3.0).max(35.0).default(16.0),
+  widePlateauMinHours: z.number().min(2.0).max(72.0).default(6.0),
+  widePlateauMaxDistanceToPeakPct: z.number().min(3.0).max(25.0).default(18.0)
 });
 
 export type DetectionConfig = z.infer<typeof DetectionConfigSchema>;
@@ -33,5 +38,9 @@ export const DEFAULT_DETECTION_CONFIG: DetectionConfig = {
   cooldownMinutes: 60,
   useClosesForPeaks: false,
   tightPlateauThresholdPct: 2.0,
-  tightPlateauWindowMinutes: 120
+  tightPlateauWindowMinutes: 120,
+  widePlateauMinOscillationPct: 3.0,
+  widePlateauMaxOscillationPct: 16.0,
+  widePlateauMinHours: 6.0,
+  widePlateauMaxDistanceToPeakPct: 18.0
 };

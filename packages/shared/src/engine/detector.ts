@@ -215,6 +215,9 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
   const range1hPct = computeWindowRange(60);
   const range2hPct = computeWindowRange(120);
   const range4hPct = computeWindowRange(240);
+  const range6hPct = computeWindowRange(360);
+  const range12hPct = computeWindowRange(720);
+  const range24hPct = computeWindowRange(1440);
 
   // Subida acumulada de los últimos 5 días (120h)
   const fiveDaysAgoMs = currentTime - 5 * 24 * 3600_000;
@@ -232,6 +235,44 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
   const isTightIn2h = range2hPct !== null && range2hPct <= tightThreshold;
   const isTightIn30m = range30mPct !== null && range30mPct <= tightThreshold && hoursWithoutNewHigh >= 0.5;
   const isTightPlateau = isTightIn2h || isTightIn30m;
+
+  // 7.1.1 Detección de Meseta Amplia / Canal de Consolidación (ej. 0.70 a 0.78 durante >= 6h a 12h+ tras subida de 48-72h)
+  const wideMinOscillation = config.widePlateauMinOscillationPct ?? 3.0;
+  const wideMaxOscillation = config.widePlateauMaxOscillationPct ?? 14.0;
+  const wideMinHours = config.widePlateauMinHours ?? 6.0;
+  const wideMaxDistToPeak = config.widePlateauMaxDistanceToPeakPct ?? 15.0;
+
+  // Evaluamos las velas del canal desde que no hay nuevo máximo (o en una ventana de hasta 36h)
+  const channelHours = Math.max(wideMinHours, Math.min(36, hoursWithoutNewHigh));
+  const channelStartMs = currentTime - channelHours * 3600_000;
+  const channelCandles = windowCandles.filter(c => c.openTime >= channelStartMs);
+
+  let channelCeiling = -Infinity;
+  let channelFloor = Infinity;
+  for (const c of channelCandles) {
+    const highVal = config.useClosesForPeaks ? c.close : c.high;
+    const lowVal = config.useClosesForPeaks ? c.close : c.low;
+    if (highVal > channelCeiling) channelCeiling = highVal;
+    if (lowVal < channelFloor) channelFloor = lowVal;
+  }
+  if (channelCeiling === -Infinity) channelCeiling = peakPrice;
+  if (channelFloor === Infinity) channelFloor = currentPrice;
+
+  const channelOscillationPct = roundTo(calculateRangePct(channelCeiling, channelFloor), 2);
+
+  // Comprobar condiciones de canal amplio sostenido
+  const hasPriorRally = (impulseTotalPct >= 30.0) ||
+                        (surge5dPct !== null && surge5dPct >= 20.0) ||
+                        ((changes['48h'] ?? 0) !== null && (changes['48h'] ?? 0)! >= 20.0) ||
+                        ((changes['72h'] ?? 0) !== null && (changes['72h'] ?? 0)! >= 25.0);
+
+  const hasChannelDuration = hoursWithoutNewHigh >= wideMinHours;
+  const isWithinOscillationBand = channelOscillationPct >= wideMinOscillation && channelOscillationPct <= wideMaxOscillation;
+  const isFloorHolding = currentPrice >= channelFloor * 0.985; // El precio actual no ha perforado el piso del canal
+  const isWithinPeakTolerance = Math.abs(distanceToPeakPct) <= wideMaxDistToPeak;
+
+  const isWidePlateau = hasPriorRally && hasChannelDuration && isWithinOscillationBand && isFloorHolding && isWithinPeakTolerance;
+  const plateauType: 'TIGHT' | 'WIDE' | 'NONE' = isTightPlateau ? 'TIGHT' : (isWidePlateau ? 'WIDE' : 'NONE');
 
   // 7.2 Detección de Clímax de Volumen y Absorción (Mechas Superiores)
   const recentCandlesForWicks = windowCandles.slice(-Math.min(60, windowCandles.length));
@@ -343,11 +384,11 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
       rangeLow,
       peakPrice
     };
-  } else if (!hasSignificantImpulse && !(surge5dPct !== null && surge5dPct >= 25.0 && isTightPlateau)) {
+  } else if (!hasSignificantImpulse && !(surge5dPct !== null && surge5dPct >= 20.0 && (isTightPlateau || isWidePlateau)) && !isWidePlateau) {
     newState = CoinState.OBSERVACION;
   } else {
-    // Hay un impulso significativo previo (ej. >= 70% o subida 5d sostenida >= 25%)
-    // Si cumple la regla de meseta estrecha (rango <= 2% en 2h o 30m sin nuevo máximo cerca del pico)
+    // Hay un impulso significativo previo (ej. >= 70% o subida sostenida >= 20% o canal amplio)
+    // 1. Prioridad: Meseta estrecha (rango <= 2% en 2h o 30m cerca del pico)
     if (isTightPlateau && Math.abs(distanceToPeakPct) <= config.plateauMaxDistanceToPeakPct * 1.5 && hoursWithoutNewHigh >= 0.5) {
       newState = CoinState.MESETA_TEMPRANA;
       confidenceScore = Math.min(95, 80 + Math.floor(hoursWithoutNewHigh * 3));
@@ -358,11 +399,22 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
         rangeLow,
         peakPrice
       };
+    } else if (isWidePlateau) {
+      // 2. Meseta Amplia / Canal de Consolidación en Máximos (ej. 0.70 a 0.78 durante >= 6h a 12h)
+      newState = CoinState.MESETA_TEMPRANA;
+      confidenceScore = Math.min(92, 75 + Math.floor(Math.min(hoursWithoutNewHigh, 24) * 0.7));
+      plateauAction = {
+        action: previousState === CoinState.MESETA_TEMPRANA ? 'NONE' : 'START',
+        status: PlateauStatus.IN_PROGRESS,
+        rangeHigh: channelCeiling,
+        rangeLow: channelFloor,
+        peakPrice
+      };
     } else if (hoursWithoutNewHigh < config.earlyPlateauMinHours && !hasVelocityDropped) {
       newState = CoinState.IMPULSO_ALCISTA;
       confidenceScore = 80;
     } else if (hasSignificantImpulse && hasTimeWithoutHigh && isNearPeak && isRangeTight) {
-      // Meseta confirmada y establecida
+      // Meseta confirmada y establecida estándar
       newState = CoinState.MESETA_TEMPRANA;
       confidenceScore = Math.min(95, 70 + (hoursWithoutNewHigh * 3));
       plateauAction = {
@@ -378,15 +430,16 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
       confidenceScore = 65;
     } else if (previousState === CoinState.MESETA_TEMPRANA || previousState === CoinState.DESACELERACION) {
       // Comprobar ruptura bajista
-      const breakdownThreshold = rangeLow * (1 - config.breakdownPullbackPct / 100);
-      if (currentPrice < breakdownThreshold || distanceToPeakPct < -config.breakdownPullbackPct * 1.5) {
+      const effectiveFloor = (isWidePlateau || plateauType === 'WIDE') ? channelFloor : rangeLow;
+      const breakdownThreshold = effectiveFloor * (1 - config.breakdownPullbackPct / 100);
+      if (currentPrice < breakdownThreshold || (!isWidePlateau && distanceToPeakPct < -config.breakdownPullbackPct * 1.5)) {
         newState = CoinState.RUPTURA_BAJISTA;
         confidenceScore = 85;
         plateauAction = {
           action: 'BREAKDOWN',
           status: PlateauStatus.BROKEN_DOWN,
-          rangeHigh,
-          rangeLow,
+          rangeHigh: channelCeiling,
+          rangeLow: effectiveFloor,
           peakPrice
         };
       }
@@ -397,7 +450,11 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
   const speedDisplay = roundTo(recentSpeedPerMin * 60, 2);
   const explanationParts = [];
 
-  if (newState === CoinState.MESETA_TEMPRANA && isTightPlateau) {
+  if (newState === CoinState.MESETA_TEMPRANA && isWidePlateau) {
+    explanationParts.push(
+      `Meseta Amplia (Canal de Consolidación): Precio oscilando entre ${formatPrice(channelFloor)} y ${formatPrice(channelCeiling)} (${channelOscillationPct}% amplitud) durante ${hoursWithoutNewHigh.toFixed(1)}h tras subida previa (+${impulseTotalPct}%). Piso sostenido sin quiebre.`
+    );
+  } else if (newState === CoinState.MESETA_TEMPRANA && isTightPlateau) {
     const activeTightWin = isTightIn2h ? '2h' : '30m';
     const activeTightVal = isTightIn2h ? range2hPct : range30mPct;
     explanationParts.push(
@@ -451,8 +508,17 @@ export function evaluatePlateauDetector(input: DetectorInput): DetectorOutput {
     range1hPct,
     range2hPct,
     range4hPct,
+    range6hPct,
+    range12hPct,
+    range24hPct,
     surge5dPct,
     isTightPlateau,
+    isWidePlateau,
+    plateauType,
+    channelFloor: isWidePlateau ? channelFloor : null,
+    channelCeiling: isWidePlateau ? channelCeiling : null,
+    channelOscillationPct: isWidePlateau ? channelOscillationPct : null,
+    hoursInChannel: isWidePlateau ? hoursWithoutNewHigh : null,
     oiValueUsd: oiVal,
     oiChange1hPct: oi1h,
     oiChange24hPct: oi24h,
